@@ -15,13 +15,30 @@ Prerequisites:
 - Vault 1.12 or later with a configured `plugin_directory`.
 - `VAULT_ADDR` and a token able to register plugins and enable secrets
   engines.
-- A LiteLLM proxy backed by a database.
-- A LiteLLM key with proxy admin rights. The master key works, as does a
-  `proxy_admin` virtual key.
+- A LiteLLM proxy backed by a database, with its URL in `LITELLM_URL` and
+  its master key in `LITELLM_MASTER_KEY` for the preparation step.
+
+Prepare LiteLLM:
+
+1. Create the plugin's admin identity: a user with the `proxy_admin` role
+   and a virtual key under it. The key is the plugin's `admin_key`.
+
+   ```sh
+   curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+     -X POST "$LITELLM_URL/user/new" \
+     -d '{"user_id":"vault-plugin","user_role":"proxy_admin"}'
+   curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+     -X POST "$LITELLM_URL/key/generate" \
+     -d '{"user_id":"vault-plugin","key_alias":"vault-plugin-admin"}'
+   ```
+
+   LiteLLM's documentation covers
+   [virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys) and
+   [user roles](https://docs.litellm.ai/docs/proxy/access_control).
 
 Register and enable the engine:
 
-1. Download the archive for the Vault server's platform from the
+2. Download the archive for the Vault server's platform from the
    [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases),
    extract `vault-plugin-secrets-litellm`, and place it in the plugin
    directory owned by the user Vault runs as and executable by it:
@@ -46,7 +63,7 @@ Register and enable the engine:
      --repo benemon/vault-plugin-secrets-litellm
    ```
 
-2. Register it under the catalog name `litellm`, passing the checksum of the
+3. Register it under the catalog name `litellm`, passing the checksum of the
    installed binary and the release version. The catalog name becomes the
    engine type and the prefix of the mount accessor. On Vault Enterprise the
    plugin catalog belongs to the root namespace, so run this with a
@@ -60,7 +77,7 @@ Register and enable the engine:
      -command=vault-plugin-secrets-litellm secret litellm
    ```
 
-3. Enable it, in whichever namespace the engine should live.
+4. Enable it, in whichever namespace the engine should live.
 
    ```sh
    vault secrets enable -path=litellm litellm
@@ -85,6 +102,23 @@ refused if LiteLLM rejects it. Writing again with a subset of parameters
 keeps the others. `vault read litellm/config` returns `url`, `ca_cert` and
 `insecure_tls`. `vault delete litellm/config` removes the configuration, after
 which role and key operations fail until it is written again.
+
+### Rotate the admin key
+
+```sh
+vault write -f litellm/rotate-root
+```
+
+On a LiteLLM Enterprise instance the admin key is regenerated in place and
+the previous value stops working at once. On a community instance the plugin
+generates a successor key under the same LiteLLM user, verifies it, stores
+it, and then deletes the previous key, returning a warning that says so. If
+that deletion fails the warning says the previous key is still valid. The
+configuration is rewritten only after the new key has been verified.
+
+Rotation is refused when the configured key is the master key, which LiteLLM
+cannot rotate, and when the key belongs to no LiteLLM user, since a successor
+needs an owner.
 
 ### Define a role
 
@@ -224,7 +258,7 @@ LiteLLM returns a key's plaintext once, from `/key/generate` or
 therefore takes ownership of its key by calling regenerate at bind, and Vault
 keeps the returned plaintext in the role's storage entry. That entry sits
 under the `static-roles/` prefix, which the plugin registers for seal
-wrapping. Reads serve the stored copy without regenerating.
+wrapping along with the `config` entry that holds the admin key. Reads serve the stored copy without regenerating.
 
 The plugin verifies the alias exists and refuses a bind when `key_alias` is
 missing, when the alias names no LiteLLM key, when another static role
@@ -247,6 +281,7 @@ regenerate call returns.
 | Path | Operations | Description |
 |---|---|---|
 | `config` | write, read, delete | LiteLLM connection. |
+| `rotate-root` | write | Replace the admin key with a new one under the same user. |
 | `roles/<name>` | write, read, delete | Key specification and lease bounds. |
 | `roles` | list | Role names. |
 | `creds/<name>` | read | Generate a key under a lease. |
@@ -260,7 +295,7 @@ regenerate call returns.
 | Parameter | Description |
 |---|---|
 | `url` (required) | Base URL of the LiteLLM proxy. |
-| `admin_key` (required) | Key with proxy admin rights. Verified on write. Never returned. |
+| `admin_key` (required) | A virtual key under a `proxy_admin` user. The master key is accepted but cannot be rotated. Verified on write, never returned, replaced by `rotate-root`. |
 | `ca_cert` | PEM bundle used to verify the LiteLLM server certificate. Defaults to the system trust store. |
 | `insecure_tls` | Skip server certificate verification. Default `false`. |
 
@@ -286,8 +321,8 @@ LiteLLM's error envelope, truncated to 200 bytes.
 
 - Static roles need a LiteLLM Enterprise licence. See
   [Bind a static role](#bind-a-static-role).
-- Rotation of static keys is on demand only. There is no `rotation_period`.
-- There is no `rotate-root`. LiteLLM has no API for rotating the master key.
+- Rotation of static keys and of the admin key is on demand only. There is
+  no `rotation_period`.
 - The Vault UI has no screens for external secrets engines. The mount is
   listed with Configure, which is mount tuning, and Delete. The browser CLI
   and the Leases view work with the engine. The API explorer lists the
@@ -309,8 +344,10 @@ Releases are cut by pushing a `v*` tag that points at a commit on `main`.
 The release workflow refuses any other tag.
 
 `make integration` and `make e2e` need `LITELLM_URL` and
-`LITELLM_MASTER_KEY`. The static-role steps need a licensed instance. The
-integration test skips them on a community instance and `make e2e` fails. `make run` and `make e2e` start `vault server -dev` from
+`LITELLM_MASTER_KEY`. Both create a `proxy_admin` user and key with the
+master key, configure the plugin with that key, and rotate it. The
+static-role steps need a licensed instance. The integration test skips them
+on a community instance and `make e2e` fails. `make run` and `make e2e` start `vault server -dev` from
 `VAULT_BIN`, defaulting to the `vault` on your path. On macOS keep the plugin
 directory outside `/tmp`. Vault rejects it because `/tmp` resolves to
 `/private/tmp`.

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,12 +22,19 @@ import (
 
 // fakeLiteLLM reproduces the /key/* behaviour and error envelopes observed on
 // litellm 1.93.0: plaintext only at generate and regenerate, unique aliases,
-// unit-suffixed durations, Enterprise gating of tags and regenerate.
+// unit-suffixed durations, Enterprise gating of tags and regenerate, and the
+// admin gate that a proxy_admin user's keys pass like the master key.
 type fakeLiteLLM struct {
 	*httptest.Server
 	adminKey string
 	// licensed lifts the Enterprise gate on regenerate.
 	licensed bool
+	// adminUsers are LiteLLM users whose keys pass the admin gate like the
+	// master key does (proxy_admin role).
+	adminUsers map[string]bool
+	// demoteNewKeys makes keys generated from now on fail the admin gate,
+	// whatever user they belong to.
+	demoteNewKeys bool
 
 	mu   sync.Mutex
 	keys map[string]*fakeKey // by alias
@@ -41,6 +49,8 @@ type fakeKey struct {
 	Request map[string]any
 	// Duration is the last duration string applied by generate or update.
 	Duration string
+	// Demoted is demoteNewKeys as it stood when the key was generated.
+	Demoted bool
 }
 
 func newFakeLiteLLM(t *testing.T) *fakeLiteLLM {
@@ -67,7 +77,7 @@ func (f *fakeLiteLLM) certPEM() string {
 }
 
 func newUnstartedFake() *fakeLiteLLM {
-	f := &fakeLiteLLM{adminKey: "sk-admin", keys: map[string]*fakeKey{}}
+	f := &fakeLiteLLM{adminKey: "sk-admin", keys: map[string]*fakeKey{}, adminUsers: map[string]bool{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /key/generate", f.generate)
 	mux.HandleFunc("POST /key/update", f.update)
@@ -101,12 +111,23 @@ func (f *fakeLiteLLM) auth(next http.Handler) http.Handler {
 		switch {
 		case got == "":
 			f.fail(w, 401, "Authentication Error, No api key passed in.")
-		case got != "Bearer "+f.adminKey:
+		case got != "Bearer "+f.adminKey && !f.isAdminVirtualKey(strings.TrimPrefix(got, "Bearer ")):
 			f.fail(w, 401, "Authentication Error, Invalid proxy server token passed. Unable to find token in cache or `LiteLLM_VerificationTokenTable`")
 		default:
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+func (f *fakeLiteLLM) isAdminVirtualKey(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := f.find(key)
+	if k == nil {
+		return false
+	}
+	user, _ := k.Request["user_id"].(string)
+	return f.adminUsers[user] && !k.Demoted
 }
 
 func (f *fakeLiteLLM) fail(w http.ResponseWriter, status int, msg string) {
@@ -153,7 +174,7 @@ func (f *fakeLiteLLM) generate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	k := &fakeKey{Alias: alias, Request: body}
+	k := &fakeKey{Alias: alias, Request: body, Demoted: f.demoteNewKeys}
 	if d, ok := body["duration"].(string); ok {
 		dur, msg := parseDuration(d)
 		if msg != "" {
@@ -206,6 +227,7 @@ func (f *fakeLiteLLM) update(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeLiteLLM) delete(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		Keys       []string `json:"keys"`
 		KeyAliases []string `json:"key_aliases"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
@@ -216,6 +238,14 @@ func (f *fakeLiteLLM) delete(w http.ResponseWriter, r *http.Request) {
 		if _, ok := f.keys[a]; ok {
 			delete(f.keys, a)
 			deleted = append(deleted, a)
+		}
+	}
+	for _, key := range body.Keys {
+		for alias, k := range f.keys {
+			if k.Key == key || k.Token == key {
+				delete(f.keys, alias)
+				deleted = append(deleted, key)
+			}
 		}
 	}
 	if len(deleted) == 0 {
@@ -255,7 +285,7 @@ func (f *fakeLiteLLM) info(w http.ResponseWriter, r *http.Request) {
 		f.fail(w, 404, "Key not found in database")
 		return
 	}
-	f.ok(w, map[string]any{"key": k.Token, "info": map[string]any{"key_alias": k.Alias, "expires": expiresJSON(k.Expires)}})
+	f.ok(w, map[string]any{"key": k.Token, "info": map[string]any{"key_alias": k.Alias, "expires": expiresJSON(k.Expires), "user_id": k.Request["user_id"]}})
 }
 
 func (f *fakeLiteLLM) regenerate(w http.ResponseWriter, r *http.Request) {
