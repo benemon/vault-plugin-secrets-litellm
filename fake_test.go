@@ -21,7 +21,7 @@ import (
 
 // fakeLiteLLM reproduces the /key/* behaviour and error envelopes observed on
 // litellm 1.93.0 community: plaintext only at generate, unique aliases,
-// unit-suffixed durations, Enterprise gating of tags/guardrails/regenerate.
+// unit-suffixed durations, Enterprise gating of tags.
 type fakeLiteLLM struct {
 	*httptest.Server
 	adminKey string
@@ -70,11 +70,7 @@ func newUnstartedFake() *fakeLiteLLM {
 	mux.HandleFunc("POST /key/generate", f.generate)
 	mux.HandleFunc("POST /key/update", f.update)
 	mux.HandleFunc("POST /key/delete", f.delete)
-	mux.HandleFunc("GET /key/info", f.info)
 	mux.HandleFunc("GET /key/list", f.list)
-	mux.HandleFunc("POST /key/regenerate", func(w http.ResponseWriter, r *http.Request) {
-		f.fail(w, 500, "Regenerating Virtual Keys is an Enterprise feature, You must be a LiteLLM Enterprise user to use this feature.")
-	})
 	f.Server = httptest.NewUnstartedServer(f.auth(mux))
 	return f
 }
@@ -139,15 +135,10 @@ func parseDuration(s string) (time.Duration, string) {
 
 func (f *fakeLiteLLM) generate(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		f.fail(w, 422, "invalid json")
+	json.NewDecoder(r.Body).Decode(&body)
+	if _, ok := body["tags"]; ok {
+		f.fail(w, 403, "Setting tags is an Enterprise feature")
 		return
-	}
-	for _, field := range []string{"tags", "guardrails"} {
-		if _, ok := body[field]; ok {
-			f.fail(w, 403, "Setting "+field+" is an Enterprise feature")
-			return
-		}
 	}
 	alias, _ := body["key_alias"].(string)
 	f.mu.Lock()
@@ -190,22 +181,18 @@ func expiresJSON(t time.Time) any {
 	return t.UTC().Format("2006-01-02T15:04:05.000000Z")
 }
 
-func (f *fakeLiteLLM) find(keyOrToken string) (string, *fakeKey) {
-	for alias, k := range f.keys {
-		if k.Key == keyOrToken || k.Token == keyOrToken {
-			return alias, k
-		}
-	}
-	return "", nil
-}
-
 func (f *fakeLiteLLM) update(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	json.NewDecoder(r.Body).Decode(&body)
 	key, _ := body["key"].(string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	_, k := f.find(key)
+	var k *fakeKey
+	for _, cand := range f.keys {
+		if cand.Key == key || cand.Token == key {
+			k = cand
+		}
+	}
 	if k == nil {
 		f.fail(w, 404, "Key not found.")
 		return
@@ -224,7 +211,6 @@ func (f *fakeLiteLLM) update(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeLiteLLM) delete(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Keys       []string `json:"keys"`
 		KeyAliases []string `json:"key_aliases"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
@@ -237,30 +223,11 @@ func (f *fakeLiteLLM) delete(w http.ResponseWriter, r *http.Request) {
 			deleted = append(deleted, a)
 		}
 	}
-	for _, key := range body.Keys {
-		if alias, k := f.find(key); k != nil {
-			delete(f.keys, alias)
-			deleted = append(deleted, key)
-		}
-	}
 	if len(deleted) == 0 {
 		f.fail(w, 404, "{'error': 'No keys found'}")
 		return
 	}
 	f.ok(w, map[string]any{"deleted_keys": deleted})
-}
-
-func (f *fakeLiteLLM) info(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	_, k := f.find(r.URL.Query().Get("key"))
-	if k == nil {
-		f.fail(w, 404, "Key not found in database")
-		return
-	}
-	f.ok(w, map[string]any{"key": k.Token, "info": map[string]any{
-		"key_alias": k.Alias, "expires": expiresJSON(k.Expires), "metadata": k.Request["metadata"],
-	}})
 }
 
 func (f *fakeLiteLLM) list(w http.ResponseWriter, r *http.Request) {

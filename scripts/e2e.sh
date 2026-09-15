@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check through a real Vault dev server and a real LiteLLM:
-# generate, authenticate, renew, cap at max_ttl, revoke, natural expiry.
+# End-to-end check through a real Vault dev server and a real LiteLLM.
 # Needs LITELLM_URL and LITELLM_MASTER_KEY; VAULT_BIN selects the server binary.
 set -euo pipefail
 
@@ -10,7 +9,7 @@ PLUGIN_NAME="vault-plugin-secrets-litellm"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH="$DIR/scripts/tmp-e2e"
 V="${VAULT_BIN:-vault}"
-export VAULT_ADDR="http://127.0.0.1:${E2E_PORT:-8210}"
+export VAULT_ADDR="http://127.0.0.1:8210"
 export VAULT_TOKEN=root
 MH="Authorization: Bearer $LITELLM_MASTER_KEY"
 
@@ -27,7 +26,7 @@ go build -o "$SCRATCH/plugins/$PLUGIN_NAME" "$DIR/cmd/$PLUGIN_NAME"
 VAULT_PID=$!
 cleanup() {
   kill -INT "$VAULT_PID" 2>/dev/null; wait "$VAULT_PID" 2>/dev/null || true
-  [ "${KEEP_SCRATCH:-}" ] || rm -rf "$SCRATCH"
+  rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
 for _ in $(seq 1 40); do "$V" status >/dev/null 2>&1 && break; sleep 0.5; done
@@ -41,8 +40,7 @@ pass "configured"
 "$V" write litellm/roles/e2e ttl=10m max_ttl=15m \
   key_request='{"models":["qwen-a3b"],"max_budget":0.05,"rpm_limit":10,"metadata":{"suite":"e2e"}}' >/dev/null
 "$V" read -format=json litellm/creds/e2e >"$SCRATCH/creds.json"
-KEY=$(python3 -c 'import json;print(json.load(open("'"$SCRATCH"'/creds.json"))["data"]["key"])')
-LEASE=$(python3 -c 'import json;print(json.load(open("'"$SCRATCH"'/creds.json"))["lease_id"])')
+read -r KEY LEASE < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["data"]["key"],d["lease_id"])' "$SCRATCH/creds.json")
 [ "$(key_status "$KEY")" = 200 ] || fail "generated key unknown to LiteLLM"
 pass "generated key from role (lease $LEASE)"
 

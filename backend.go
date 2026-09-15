@@ -11,8 +11,6 @@ import (
 const (
 	// operationPrefixLiteLLM is the prefix for OpenAPI operation ids.
 	operationPrefixLiteLLM = "litellm"
-
-	configPath = "config"
 )
 
 // version is overridden at build time with -ldflags "-X ...litellm.version=".
@@ -35,14 +33,12 @@ func Backend() *backend {
 				configPath,
 			},
 		},
-		Paths: framework.PathAppend(
-			[]*framework.Path{
-				b.pathConfig(),
-				b.pathRoles(),
-				b.pathRolesList(),
-				b.pathCreds(),
-			},
-		),
+		Paths: []*framework.Path{
+			b.pathConfig(),
+			b.pathRoles(),
+			b.pathRolesList(),
+			b.pathCreds(),
+		},
 		Secrets: []*framework.Secret{
 			keySecret(b),
 		},

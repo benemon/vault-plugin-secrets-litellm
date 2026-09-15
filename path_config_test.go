@@ -39,11 +39,12 @@ func TestConfig_WriteReadDelete(t *testing.T) {
 	f := newFakeLiteLLM(t)
 	b, s := getBackend(t)
 
-	if resp := writeConfig(t, b, s, map[string]any{"url": f.URL + "/", "admin_key": f.adminKey}); resp.IsError() {
+	url := f.URL + "/"
+	if resp := writeConfig(t, b, s, map[string]any{"url": url, "admin_key": f.adminKey}); resp.IsError() {
 		t.Fatal(resp.Error())
 	}
 	resp := readConfig(t, b, s)
-	if resp.Data["url"] != f.URL+"/" || resp.Data["insecure_tls"] != false || resp.Data["ca_cert"] != "" {
+	if resp.Data["url"] != url || resp.Data["insecure_tls"] != false || resp.Data["ca_cert"] != "" {
 		t.Fatalf("unexpected read data: %v", resp.Data)
 	}
 	if _, leaked := resp.Data["admin_key"]; leaked {
@@ -120,10 +121,11 @@ func TestConfig_TLS(t *testing.T) {
 	if !resp.IsError() || !strings.Contains(resp.Error().Error(), "certificate") {
 		t.Fatalf("untrusted cert accepted: %v", resp)
 	}
-	if resp := writeConfig(t, b, s, map[string]any{"url": f.URL, "admin_key": f.adminKey, "ca_cert": f.certPEM()}); resp.IsError() {
+	ca := f.certPEM()
+	if resp := writeConfig(t, b, s, map[string]any{"url": f.URL, "admin_key": f.adminKey, "ca_cert": ca}); resp.IsError() {
 		t.Fatal(resp.Error())
 	}
-	if resp := readConfig(t, b, s); resp.Data["ca_cert"] != f.certPEM() {
+	if resp := readConfig(t, b, s); resp.Data["ca_cert"] != ca {
 		t.Fatal("ca_cert not returned on read")
 	}
 	b2, s2 := getBackend(t)

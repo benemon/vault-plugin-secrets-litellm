@@ -13,6 +13,8 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
+const configPath = "config"
+
 type config struct {
 	URL         string `json:"url"`
 	AdminKey    string `json:"admin_key"`
@@ -166,7 +168,6 @@ func getConfig(ctx context.Context, s logical.Storage) (*config, error) {
 	return cfg, nil
 }
 
-// getClient is the entry point for every path that talks to LiteLLM.
 func getClient(ctx context.Context, s logical.Storage) (*client, error) {
 	cfg, err := getConfig(ctx, s)
 	if err != nil {

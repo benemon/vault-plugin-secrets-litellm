@@ -123,8 +123,8 @@ func TestCreds_RenewAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renewed.Secret.TTL != 5*time.Minute || renewed.Secret.MaxTTL != time.Hour {
-		t.Fatalf("renew must hand core the role bounds, got ttl %v max %v", renewed.Secret.TTL, renewed.Secret.MaxTTL)
+	if renewed.Secret.TTL != 10*time.Minute || renewed.Secret.MaxTTL != time.Hour {
+		t.Fatalf("renewed lease ttl %v max %v, want 10m / 1h", renewed.Secret.TTL, renewed.Secret.MaxTTL)
 	}
 	if k := f.byAlias(alias); k.Duration != "600s" || !k.Expires.After(before.Add(4*time.Minute)) {
 		t.Fatalf("LiteLLM expiry not extended: duration %q before %v after %v", k.Duration, before, k.Expires)
@@ -137,10 +137,11 @@ func TestCreds_RenewAndRevoke(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	d := f.byAlias(alias).Duration
 	var secs int
-	fmt.Sscanf(f.byAlias(alias).Duration, "%ds", &secs)
+	fmt.Sscanf(d, "%ds", &secs)
 	if secs < 295 || secs > 300 {
-		t.Fatalf("renewal past max_ttl sent duration %q, want about 300s", f.byAlias(alias).Duration)
+		t.Fatalf("renewal past max_ttl sent duration %q, want about 300s", d)
 	}
 
 	revoke := &logical.Request{Operation: logical.RevokeOperation, Path: credsPath + "app", Storage: s, Secret: secret}

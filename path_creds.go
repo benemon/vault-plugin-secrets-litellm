@@ -47,6 +47,9 @@ func keySecret(b *backend) *framework.Secret {
 			"key": {
 				Type:        framework.TypeString,
 				Description: "The LiteLLM virtual key.",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Sensitive: true,
+				},
 			},
 		},
 		Renew:  b.keyRenew,
@@ -85,7 +88,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, d *fr
 		body[k] = v
 	}
 	metadata := map[string]any{}
-	if md, ok := role.KeyRequest["metadata"].(map[string]any); ok {
+	if md, ok := body["metadata"].(map[string]any); ok {
 		for k, v := range md {
 			metadata[k] = v
 		}
@@ -109,8 +112,7 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, d *fr
 			"key_alias": key.KeyAlias,
 			"expires":   key.Expires,
 		},
-		// The plaintext is deliberately absent: revoke and renew work from the
-		// alias and hash, so Vault storage never holds a usable key.
+		// Revoke and renew use key_alias and token_id; the plaintext is never stored.
 		map[string]any{
 			"role":      name,
 			"key_alias": key.KeyAlias,
@@ -147,7 +149,7 @@ func (b *backend) keyRenew(ctx context.Context, req *logical.Request, _ *framewo
 		return nil, err
 	}
 	resp := &logical.Response{Secret: req.Secret}
-	resp.Secret.TTL = role.TTL
+	resp.Secret.TTL = ttl
 	resp.Secret.MaxTTL = role.MaxTTL
 	return resp, nil
 }

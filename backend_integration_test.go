@@ -4,6 +4,8 @@ package litellm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,9 +14,7 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-// TestIntegration_BackendLifecycle drives the backend in-process against the
-// real instance: configure, role, generate, renew, revoke, with LiteLLM's
-// view checked at each step through the same client the backend uses.
+// TestIntegration_BackendLifecycle drives the backend in-process against the real instance.
 func TestIntegration_BackendLifecycle(t *testing.T) {
 	c := integrationClient(t)
 	ctx := context.Background()
@@ -40,6 +40,9 @@ func TestIntegration_BackendLifecycle(t *testing.T) {
 	alias := resp.Data["key_alias"].(string)
 	tokenID := resp.Data["token_id"].(string)
 	t.Cleanup(func() { c.deleteKeyByAlias(ctx, alias) })
+	if sum := sha256.Sum256([]byte(resp.Data["key"].(string))); hex.EncodeToString(sum[:]) != tokenID {
+		t.Fatal("token_id is not the SHA-256 of the key")
+	}
 	if !strings.HasPrefix(alias, "vault-"+role+"-") || resp.Secret.TTL != 2*time.Minute {
 		t.Fatalf("alias %q ttl %v", alias, resp.Secret.TTL)
 	}
