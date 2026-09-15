@@ -27,6 +27,10 @@ go build -o "$SCRATCH/plugins/$PLUGIN_NAME" "$DIR/cmd/$PLUGIN_NAME"
 VAULT_PID=$!
 cleanup() {
   kill -INT "$VAULT_PID" 2>/dev/null; wait "$VAULT_PID" 2>/dev/null || true
+  curl -sS -H "$MH" "$LITELLM_URL/key/list?return_full_object=true&user_id=vault-e2e-admin" \
+    | python3 -c 'import json,sys;print(" ".join(k["token"] for k in json.load(sys.stdin).get("keys",[])))' 2>/dev/null \
+    | xargs -n1 -I{} curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d '{"keys":["{}"]}'
+  curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/delete" -d '{"user_ids":["vault-e2e-admin"]}'
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
@@ -35,8 +39,21 @@ for _ in $(seq 1 40); do "$V" status >/dev/null 2>&1 && break; sleep 0.5; done
 SHASUM=$(shasum -a 256 "$SCRATCH/plugins/$PLUGIN_NAME" | cut -d' ' -f1)
 "$V" plugin register -sha256="$SHASUM" -command="$PLUGIN_NAME" secret litellm >/dev/null
 "$V" secrets enable -path=litellm litellm >/dev/null
-"$V" write litellm/config url="$LITELLM_URL" admin_key="$LITELLM_MASTER_KEY" >/dev/null
-pass "configured"
+
+# The documented setup: a proxy_admin user and a virtual key under it, minted
+# once with the master key, are what the plugin holds.
+ADMIN_USER="vault-e2e-admin"
+curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/new" \
+  -d "{\"user_id\":\"$ADMIN_USER\",\"user_role\":\"proxy_admin\"}" >/dev/null
+ADMIN_KEY=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
+  -d "{\"user_id\":\"$ADMIN_USER\",\"key_alias\":\"e2e-plugin-admin\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])')
+"$V" write litellm/config url="$LITELLM_URL" admin_key="$ADMIN_KEY" >/dev/null
+pass "configured with a proxy_admin virtual key"
+
+"$V" write -f litellm/rotate-root >"$SCRATCH/rotate.txt" 2>&1 || fail "rotate-root failed: $(cat "$SCRATCH/rotate.txt")"
+[ "$(auth_status "$ADMIN_KEY")" = 401 ] || fail "previous admin key still authenticates after rotate-root"
+"$V" read litellm/config >/dev/null || fail "plugin unusable after rotate-root"
+pass "rotate-root replaced the admin key ($(grep -q successor "$SCRATCH/rotate.txt" && echo successor path || echo regenerate path))"
 
 "$V" write litellm/roles/e2e ttl=10m max_ttl=15m \
   key_request='{"models":["qwen-a3b"],"max_budget":0.05,"rpm_limit":10,"metadata":{"suite":"e2e"}}' >/dev/null

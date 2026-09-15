@@ -47,7 +47,7 @@ func TestIntegration_BackendLifecycle(t *testing.T) {
 		t.Fatalf("alias %q ttl %v", alias, resp.Secret.TTL)
 	}
 
-	info := keyInfo(t, c, tokenID)
+	info := liveKeyInfo(t, c, tokenID)
 	md := info["metadata"].(map[string]any)
 	if md["suite"] != "integration" || md["vault_role"] != role || md["vault_request_id"] != "req-123" || md["vault_mount_path"] != "litellm/" {
 		t.Fatalf("metadata = %v", md)
@@ -68,7 +68,7 @@ func TestIntegration_BackendLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	renewed, _ := time.Parse(time.RFC3339Nano, keyInfo(t, c, tokenID)["expires"].(string))
+	renewed, _ := time.Parse(time.RFC3339Nano, liveKeyInfo(t, c, tokenID)["expires"].(string))
 	if d := time.Until(renewed); d < 4*time.Minute || d > 5*time.Minute+5*time.Second {
 		t.Fatalf("LiteLLM expiry after renew %v from now, want about 5m", d)
 	}
@@ -88,7 +88,7 @@ func TestIntegration_BackendLifecycle(t *testing.T) {
 	}
 }
 
-func keyInfo(t *testing.T, c *client, tokenID string) map[string]any {
+func liveKeyInfo(t *testing.T, c *client, tokenID string) map[string]any {
 	t.Helper()
 	var out struct {
 		Info map[string]any `json:"info"`
@@ -130,7 +130,7 @@ func TestIntegration_StaticRoleLifecycle(t *testing.T) {
 	if authStatus(t, c, key) != 200 {
 		t.Fatal("served key does not authenticate")
 	}
-	if info := keyInfo(t, c, tokenID); info["key_alias"] != alias || info["models"].([]any)[0] != "qwen-a3b" {
+	if info := liveKeyInfo(t, c, tokenID); info["key_alias"] != alias || info["models"].([]any)[0] != "qwen-a3b" {
 		t.Fatalf("regenerate lost alias or settings: %v", info)
 	}
 
@@ -160,4 +160,52 @@ func authStatus(t *testing.T, c *client, key string) int {
 	}
 	resp.Body.Close()
 	return resp.StatusCode
+}
+
+func TestIntegration_RotateRoot(t *testing.T) {
+	c := integrationClient(t)
+	ctx := context.Background()
+	user := "vault-it-admin-" + time.Now().UTC().Format("150405")
+	if err := c.do(ctx, http.MethodPost, "/user/new", map[string]any{"user_id": user, "user_role": "proxy_admin"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.do(ctx, http.MethodPost, "/user/delete", map[string]any{"user_ids": []string{user}}, nil) })
+	admin, err := c.generateKey(ctx, map[string]any{"user_id": user, "key_alias": user + "-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		var out struct {
+			Keys []struct {
+				Token string `json:"token"`
+			} `json:"keys"`
+		}
+		c.do(ctx, http.MethodGet, "/key/list?return_full_object=true&user_id="+user, nil, &out)
+		for _, k := range out.Keys {
+			c.deleteKeyByHash(ctx, k.Token)
+		}
+	})
+
+	b, s := getBackend(t)
+	if resp := writeConfig(t, b, s, map[string]any{"url": c.baseURL, "admin_key": admin.Key}); resp.IsError() {
+		t.Fatal(resp.Error())
+	}
+	resp, err := b.HandleRequest(ctx, &logical.Request{Operation: logical.UpdateOperation, Path: "rotate-root", Storage: s})
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("rotate-root: resp %v err %v", resp, err)
+	}
+	cfg, _ := getConfig(ctx, s)
+	if cfg.AdminKey == admin.Key {
+		t.Fatal("admin key unchanged")
+	}
+	if authStatus(t, c, admin.Key) != 401 || authStatus(t, c, cfg.AdminKey) != 200 {
+		t.Fatal("rotation did not swap which admin key authenticates")
+	}
+	if info, err := newClient(c.baseURL, cfg.AdminKey, c.http).keyInfo(ctx, cfg.AdminKey); err != nil || info.UserID != user {
+		t.Fatalf("rotated key not under the same user: %v %v", info, err)
+	}
+	if _, err := newClient(c.baseURL, cfg.AdminKey, c.http).generateKey(ctx, map[string]any{"key_alias": user + "-probe", "duration": "1m"}); err != nil {
+		t.Fatalf("rotated key cannot generate: %v", err)
+	}
+	t.Logf("path taken: %d warnings (0 = regenerate, 1 = successor)", len(resp.Warnings))
 }

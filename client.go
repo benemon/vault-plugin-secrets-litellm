@@ -92,6 +92,28 @@ func (c *client) regenerateKey(ctx context.Context, tokenID string) (*generatedK
 	return &out, nil
 }
 
+// keyInfo is the owner and alias of a key; 404 for the master key, which
+// LiteLLM does not store.
+type keyInfo struct {
+	UserID   string `json:"user_id"`
+	KeyAlias string `json:"key_alias"`
+}
+
+func (c *client) keyInfo(ctx context.Context, key string) (*keyInfo, error) {
+	var out struct {
+		Info keyInfo `json:"info"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out.Info, nil
+}
+
+func (c *client) deleteKeyByHash(ctx context.Context, tokenID string) error {
+	body := map[string]any{"keys": []string{tokenID}}
+	return c.do(ctx, http.MethodPost, "/key/delete", body, nil)
+}
+
 // checkKey returns a 404 apiError when the hash no longer names a key, which
 // is what regeneration or deletion outside Vault looks like.
 func (c *client) checkKey(ctx context.Context, tokenID string) error {

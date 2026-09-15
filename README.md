@@ -16,12 +16,28 @@ Prerequisites:
 - `VAULT_ADDR` and a token able to register plugins and enable secrets
   engines.
 - A LiteLLM proxy backed by a database.
-- A LiteLLM key with proxy admin rights. The master key works, as does a
-  `proxy_admin` virtual key.
+- A LiteLLM virtual key under a user with the `proxy_admin` role, for the
+  plugin to use as `admin_key`. See step 1 below. The master key also works
+  but cannot be rotated.
 
 Register and enable the engine:
 
-1. Download the archive for the Vault server's platform from the
+1. Create the plugin's admin identity in LiteLLM with the master key: a user
+   with the `proxy_admin` role and a virtual key under it. The master key is
+   then only needed to replace that key if it is lost.
+
+   ```sh
+   curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -X POST "$LITELLM_URL/user/new" \
+     -d '{"user_id":"vault-plugin","user_role":"proxy_admin"}'
+   curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -X POST "$LITELLM_URL/key/generate" \
+     -d '{"user_id":"vault-plugin","key_alias":"vault-plugin-admin"}'
+   ```
+
+   LiteLLM's documentation covers
+   [virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys) and
+   [user roles](https://docs.litellm.ai/docs/proxy/access_control).
+
+2. Download the archive for the Vault server's platform from the
    [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases),
    extract `vault-plugin-secrets-litellm`, and place it in the plugin
    directory owned by the user Vault runs as and executable by it:
@@ -46,7 +62,7 @@ Register and enable the engine:
      --repo benemon/vault-plugin-secrets-litellm
    ```
 
-2. Register it under the catalog name `litellm`, passing the checksum of the
+3. Register it under the catalog name `litellm`, passing the checksum of the
    installed binary and the release version. The catalog name becomes the
    engine type and the prefix of the mount accessor. On Vault Enterprise the
    plugin catalog belongs to the root namespace, so run this with a
@@ -60,7 +76,7 @@ Register and enable the engine:
      -command=vault-plugin-secrets-litellm secret litellm
    ```
 
-3. Enable it, in whichever namespace the engine should live.
+4. Enable it, in whichever namespace the engine should live.
 
    ```sh
    vault secrets enable -path=litellm litellm
@@ -85,6 +101,19 @@ refused if LiteLLM rejects it. Writing again with a subset of parameters
 keeps the others. `vault read litellm/config` returns `url`, `ca_cert` and
 `insecure_tls`. `vault delete litellm/config` removes the configuration, after
 which role and key operations fail until it is written again.
+
+### Rotate the admin key
+
+```sh
+vault write -f litellm/rotate-root
+```
+
+Where LiteLLM allows it, the admin key is regenerated in place and the
+previous value stops working at once. On a community instance the plugin
+generates a successor key under the same LiteLLM user, verifies it, stores
+it, and then deletes the previous key, returning a warning that says so. The
+configuration is rewritten only after the new key has been verified. A
+configured master key is refused, because LiteLLM has no API to rotate it.
 
 ### Define a role
 
@@ -247,6 +276,7 @@ regenerate call returns.
 | Path | Operations | Description |
 |---|---|---|
 | `config` | write, read, delete | LiteLLM connection. |
+| `rotate-root` | write | Replace the admin key with a new one under the same user. |
 | `roles/<name>` | write, read, delete | Key specification and lease bounds. |
 | `roles` | list | Role names. |
 | `creds/<name>` | read | Generate a key under a lease. |
@@ -287,7 +317,6 @@ LiteLLM's error envelope, truncated to 200 bytes.
 - Static roles need a LiteLLM Enterprise licence. See
   [Bind a static role](#bind-a-static-role).
 - Rotation of static keys is on demand only. There is no `rotation_period`.
-- There is no `rotate-root`. LiteLLM has no API for rotating the master key.
 - The Vault UI has no screens for external secrets engines. The mount is
   listed with Configure, which is mount tuning, and Delete. The browser CLI
   and the Leases view work with the engine. The API explorer lists the
