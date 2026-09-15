@@ -82,6 +82,26 @@ sleep 35
 [ "$(key_status "$K2")" = 404 ] || fail "key survived its lease expiring"
 pass "expired lease deleted the key"
 
+SALIAS="vault-e2e-static"
+curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
+  -d "{\"key_alias\":\"$SALIAS\",\"duration\":\"10m\"}" >"$SCRATCH/orig.json"
+ORIG=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key"])' "$SCRATCH/orig.json")
+auth_status() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$LITELLM_URL/v1/models"; }
+"$V" write litellm/static-roles/svc key_alias="$SALIAS" 2>&1 | grep -q 'regenerated' || fail "bind gave no regeneration warning"
+[ "$(auth_status "$ORIG")" = 401 ] || fail "original key still authenticates after bind"
+SKEY=$("$V" read -field=key litellm/static-creds/svc)
+[ "$(auth_status "$SKEY")" = 200 ] || fail "static-creds key does not authenticate"
+[ "$("$V" read -field=key litellm/static-creds/svc)" = "$SKEY" ] || fail "second static-creds read changed the key"
+pass "static role bound: Vault holds the regenerated key, the original is dead"
+"$V" write -f litellm/rotate-role/svc >/dev/null
+SKEY2=$("$V" read -field=key litellm/static-creds/svc)
+[ "$(auth_status "$SKEY")" = 401 ] && [ "$(auth_status "$SKEY2")" = 200 ] || fail "rotate-role did not swap the live key"
+pass "rotate-role regenerated the static key"
+"$V" delete litellm/static-roles/svc >/dev/null
+[ "$(key_status "$SKEY2")" = 200 ] || fail "deleting the static role removed the key from LiteLLM"
+curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d "{\"key_aliases\":[\"$SALIAS\"]}" >/dev/null
+pass "static role deleted, key left in LiteLLM until removed by hand"
+
 LEFT=$(curl -sS -H "$MH" "$LITELLM_URL/key/list?key_alias=vault-e2e-&substring_matching=true" | python3 -c 'import json,sys;print(json.load(sys.stdin)["total_count"])')
 [ "$LEFT" = 0 ] || fail "$LEFT vault-e2e-* keys left in LiteLLM"
 ! grep -qE '\[ERROR\]|panic' "$SCRATCH/vault.log" || fail "vault logged errors: $(grep -E '\[ERROR\]|panic' "$SCRATCH/vault.log" | head -3)"

@@ -98,3 +98,63 @@ func keyInfo(t *testing.T, c *client, tokenID string) map[string]any {
 	}
 	return out.Info
 }
+
+func TestIntegration_StaticRoleLifecycle(t *testing.T) {
+	c := integrationClient(t)
+	ctx := context.Background()
+	b, s := getBackend(t)
+	writeConfig(t, b, s, map[string]any{"url": c.baseURL, "admin_key": c.adminKey})
+
+	alias := "vault-it-static-" + time.Now().UTC().Format("150405")
+	orig, err := c.generateKey(ctx, map[string]any{"key_alias": alias, "duration": "10m", "models": []string{"qwen-a3b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.deleteKeyByAlias(ctx, alias) })
+
+	resp, err := handle(t, b, s, logical.UpdateOperation, staticRolePath+"svc", map[string]any{"key_alias": alias})
+	if err != nil || resp.IsError() || len(resp.Warnings) != 1 {
+		t.Fatalf("bind: resp %v err %v", resp, err)
+	}
+	if authStatus(t, c, orig.Key) != 401 {
+		t.Fatal("original key still authenticates after bind")
+	}
+	resp, _ = handle(t, b, s, logical.ReadOperation, staticCredsPath+"svc", nil)
+	key, tokenID := resp.Data["key"].(string), resp.Data["token_id"].(string)
+	if sum := sha256.Sum256([]byte(key)); hex.EncodeToString(sum[:]) != tokenID || tokenID == orig.TokenID {
+		t.Fatalf("static-creds token_id %s does not match the served key", tokenID)
+	}
+	if authStatus(t, c, key) != 200 {
+		t.Fatal("served key does not authenticate")
+	}
+	if info := keyInfo(t, c, tokenID); info["key_alias"] != alias || info["models"].([]any)[0] != "qwen-a3b" {
+		t.Fatalf("regenerate lost alias or settings: %v", info)
+	}
+
+	if resp, _ := handle(t, b, s, logical.UpdateOperation, rotateRolePath+"svc", nil); resp.IsError() {
+		t.Fatal(resp.Error())
+	}
+	resp, _ = handle(t, b, s, logical.ReadOperation, staticCredsPath+"svc", nil)
+	if authStatus(t, c, key) != 401 || authStatus(t, c, resp.Data["key"].(string)) != 200 {
+		t.Fatal("rotate did not swap which key authenticates")
+	}
+
+	handle(t, b, s, logical.DeleteOperation, staticRolePath+"svc", nil)
+	if err := c.checkKey(ctx, resp.Data["token_id"].(string)); err != nil {
+		t.Fatalf("deleting the role removed the key: %v", err)
+	}
+}
+
+// authStatus is LiteLLM's answer to a key listing models: 200 for a live
+// key, 401 for a dead one, with no inference involved.
+func authStatus(t *testing.T, c *client, key string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, c.baseURL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}

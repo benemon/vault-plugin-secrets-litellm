@@ -4,7 +4,9 @@ LiteLLM virtual keys are created by hand in the proxy, live until someone
 deletes them, and leave no record of who holds them. This Vault secrets
 engine issues them on demand instead. Each key is generated through LiteLLM's
 own key API, bound to a Vault lease, extended when the lease is renewed and
-deleted when the lease ends or is revoked.
+deleted when the lease ends or is revoked. A static role instead binds one
+existing key by alias, so consumers that share a long-lived key fetch it from
+Vault and Vault rotates it.
 
 ## Setup
 
@@ -107,6 +109,31 @@ key_alias          vault-app-1852cc6ac3a5
 token_id           6de8743f...
 ```
 
+### Bind a static role
+
+```sh
+vault write litellm/static-roles/svc key_alias=team-blue
+vault read litellm/static-creds/svc
+vault write -f litellm/rotate-role/svc
+```
+
+Binding requires a LiteLLM Enterprise licence, because the plugin calls
+`/key/regenerate`. LiteLLM returns a key's plaintext only when it creates or
+regenerates the key, so binding regenerates it once. From that moment Vault
+holds the only copy and every consumer must read it from `static-creds`. The
+write returns a warning saying the previous key no longer works. Bind during
+the cutover for that key.
+
+`static-creds/<name>` returns the stored key, its alias and its current hash,
+with no lease. Reads never touch the key. Before serving, the plugin confirms
+the hash still exists in LiteLLM. If the key was regenerated or deleted
+outside Vault, the read fails with a message pointing at `rotate-role`, which
+looks the key up by alias, regenerates it and stores the result.
+
+One static role binds one alias, and one alias binds to one static role. The
+role's `key_alias` cannot be changed. Deleting the role removes Vault's copy
+and leaves the key in LiteLLM.
+
 ## Lease behaviour
 
 Each read of `creds/<role>` sends the role's `key_request` to
@@ -146,6 +173,10 @@ describes the key API, alias rules and the Enterprise-only endpoints.
 | `roles/<name>` | write, read, delete | Key specification and lease bounds. |
 | `roles` | list | Role names. |
 | `creds/<name>` | read | Generate a key under a lease. |
+| `static-roles/<name>` | write, read, delete | Bind an existing key by alias. |
+| `static-roles` | list | Static role names. |
+| `static-creds/<name>` | read | The key held for a static role. |
+| `rotate-role/<name>` | write | Regenerate a static role's key. |
 
 ### config
 
@@ -164,16 +195,24 @@ describes the key API, alias rules and the Enterprise-only endpoints.
 | `max_ttl` | Maximum lease duration. Defaults to the mount's maximum lease TTL. |
 | `key_request` | JSON object sent to `POST /key/generate`. `key`, `key_alias` and `duration` are reserved. |
 
+### static-roles/<name>
+
+| Parameter | Description |
+|---|---|
+| `key_alias` (required) | Alias of the existing LiteLLM key. Must be unbound. |
+
 `admin_key` and the returned `key` are marked sensitive in the path schemas.
 Errors from LiteLLM are returned with their HTTP status and the message from
 LiteLLM's error envelope, truncated to 200 bytes.
 
 ## Limits
 
-- Static roles, which would hand back an existing key, are not implemented.
-  LiteLLM returns a key's plaintext only from `/key/generate`. Taking over an
-  existing key needs `/key/regenerate`, which requires an Enterprise licence.
-  Key rotation is absent for the same reason.
+- Static roles need a LiteLLM Enterprise licence. On a community instance
+  the bind fails with LiteLLM's licence error. Dynamic roles work on both.
+- Regenerate gives no overlap window. The previous key dies the instant a
+  bind or rotation completes, unlike LDAP rotation where the old password
+  can linger briefly.
+- Rotation of static keys is on demand only. There is no `rotation_period`.
 - There is no `rotate-root`. LiteLLM has no API for rotating the master key.
 - The Vault UI has no screens for external secrets engines. The mount is
   listed with Configure, which is mount tuning, and Delete. The browser CLI

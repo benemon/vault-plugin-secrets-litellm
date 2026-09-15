@@ -20,11 +20,13 @@ import (
 )
 
 // fakeLiteLLM reproduces the /key/* behaviour and error envelopes observed on
-// litellm 1.93.0 community: plaintext only at generate, unique aliases,
-// unit-suffixed durations, Enterprise gating of tags.
+// litellm 1.93.0: plaintext only at generate and regenerate, unique aliases,
+// unit-suffixed durations, Enterprise gating of tags and regenerate.
 type fakeLiteLLM struct {
 	*httptest.Server
 	adminKey string
+	// licensed lifts the Enterprise gate on regenerate.
+	licensed bool
 
 	mu   sync.Mutex
 	keys map[string]*fakeKey // by alias
@@ -71,6 +73,8 @@ func newUnstartedFake() *fakeLiteLLM {
 	mux.HandleFunc("POST /key/update", f.update)
 	mux.HandleFunc("POST /key/delete", f.delete)
 	mux.HandleFunc("GET /key/list", f.list)
+	mux.HandleFunc("GET /key/info", f.info)
+	mux.HandleFunc("POST /key/{key}/regenerate", f.regenerate)
 	f.Server = httptest.NewUnstartedServer(f.auth(mux))
 	return f
 }
@@ -159,11 +163,7 @@ func (f *fakeLiteLLM) generate(w http.ResponseWriter, r *http.Request) {
 		k.Duration = d
 		k.Expires = time.Now().Add(dur)
 	}
-	raw := make([]byte, 16)
-	rand.Read(raw)
-	k.Key = "sk-" + base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(k.Key))
-	k.Token = hex.EncodeToString(sum[:])
+	k.Key, k.Token = newKeyMaterial()
 	if alias == "" {
 		alias = k.Token
 	}
@@ -187,12 +187,7 @@ func (f *fakeLiteLLM) update(w http.ResponseWriter, r *http.Request) {
 	key, _ := body["key"].(string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var k *fakeKey
-	for _, cand := range f.keys {
-		if cand.Key == key || cand.Token == key {
-			k = cand
-		}
-	}
+	k := f.find(key)
 	if k == nil {
 		f.fail(w, 404, "Key not found.")
 		return
@@ -233,9 +228,56 @@ func (f *fakeLiteLLM) delete(w http.ResponseWriter, r *http.Request) {
 func (f *fakeLiteLLM) list(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	filter := r.URL.Query().Get("key_alias")
 	keys := []map[string]any{}
 	for _, k := range f.keys {
-		keys = append(keys, map[string]any{"token": k.Token, "key_alias": k.Alias})
+		if filter == "" || k.Alias == filter {
+			keys = append(keys, map[string]any{"token": k.Token, "key_alias": k.Alias})
+		}
 	}
 	f.ok(w, map[string]any{"keys": keys, "total_count": len(keys)})
+}
+
+func (f *fakeLiteLLM) find(keyOrToken string) *fakeKey {
+	for _, k := range f.keys {
+		if k.Key == keyOrToken || k.Token == keyOrToken {
+			return k
+		}
+	}
+	return nil
+}
+
+func (f *fakeLiteLLM) info(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := f.find(r.URL.Query().Get("key"))
+	if k == nil {
+		f.fail(w, 404, "Key not found in database")
+		return
+	}
+	f.ok(w, map[string]any{"key": k.Token, "info": map[string]any{"key_alias": k.Alias, "expires": expiresJSON(k.Expires)}})
+}
+
+func (f *fakeLiteLLM) regenerate(w http.ResponseWriter, r *http.Request) {
+	if !f.licensed {
+		f.fail(w, 500, "Regenerating Virtual Keys is an Enterprise feature, You must be a LiteLLM Enterprise user to use this feature.")
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := f.find(r.PathValue("key"))
+	if k == nil {
+		f.fail(w, 404, "Key not found.")
+		return
+	}
+	k.Key, k.Token = newKeyMaterial()
+	f.ok(w, map[string]any{"key": k.Key, "token_id": k.Token, "token": k.Token, "key_alias": k.Alias, "expires": expiresJSON(k.Expires)})
+}
+
+func newKeyMaterial() (key, token string) {
+	raw := make([]byte, 16)
+	rand.Read(raw)
+	key = "sk-" + base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(key))
+	return key, hex.EncodeToString(sum[:])
 }

@@ -31,6 +31,7 @@ func Backend() *backend {
 		PathsSpecial: &logical.Paths{
 			SealWrapStorage: []string{
 				configPath,
+				staticRolePath + "*",
 			},
 		},
 		Paths: []*framework.Path{
@@ -38,6 +39,10 @@ func Backend() *backend {
 			b.pathRoles(),
 			b.pathRolesList(),
 			b.pathCreds(),
+			b.pathStaticRoles(),
+			b.pathStaticRolesList(),
+			b.pathStaticCreds(),
+			b.pathRotateRole(),
 		},
 		Secrets: []*framework.Secret{
 			keySecret(b),
@@ -58,4 +63,8 @@ The LiteLLM secrets engine issues LiteLLM virtual API keys.
 Configure it with the LiteLLM URL and an admin key at "config", define
 roles at "roles/<name>" carrying the key specification, and read
 "creds/<name>" to generate a key whose lifetime is tied to the Vault lease.
+
+Static roles at "static-roles/<name>" bind an existing key by alias. Vault
+regenerates the key to take ownership and serves it from "static-creds/<name>"
+until "rotate-role/<name>" regenerates it again.
 `
