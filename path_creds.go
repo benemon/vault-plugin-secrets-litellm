@@ -99,6 +99,25 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, d *fr
 	body["metadata"] = metadata
 	body["key_alias"] = alias
 	body["duration"] = litellmDuration(ttl)
+	for field, tpl := range map[string]string{"user_id": role.UserIDTemplate, "team_id": role.TeamIDTemplate} {
+		if tpl == "" {
+			continue
+		}
+		if _, explicit := body[field]; explicit {
+			continue
+		}
+		if req.EntityID == "" {
+			return logical.ErrorResponse("%s_template is set but the caller's token has no entity", field), nil
+		}
+		value, err := framework.PopulateIdentityTemplate(tpl, req.EntityID, b.System())
+		if err != nil {
+			return logical.ErrorResponse("%s_template %q did not resolve for this caller: %s", field, tpl, err), nil
+		}
+		if value == "" {
+			return logical.ErrorResponse("%s_template %q resolved to an empty value for this caller", field, tpl), nil
+		}
+		body[field] = value
+	}
 
 	key, err := c.generateKey(ctx, body)
 	if err != nil {

@@ -52,10 +52,22 @@ ADMIN_KEY=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITE
 "$V" write litellm/config url="$LITELLM_URL" admin_key="$ADMIN_KEY" >/dev/null
 pass "configured with a proxy_admin virtual key"
 
+# Regenerate is the Enterprise-gated call; probe it once to know which
+# behaviours to expect from static roles and rotate-root.
+PROBE=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" -d '{"key_alias":"vault-e2e-edition-probe","duration":"2m"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token_id"])')
+if curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/$PROBE/regenerate" -d '{}' | grep -q '"key"'; then EDITION=enterprise; else EDITION=community; fi
+curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d '{"key_aliases":["vault-e2e-edition-probe"]}'
+pass "LiteLLM edition detected: $EDITION"
+
 "$V" write -f litellm/rotate-root >"$SCRATCH/rotate.txt" 2>&1 || fail "rotate-root failed: $(cat "$SCRATCH/rotate.txt")"
 [ "$(auth_status "$ADMIN_KEY")" = 401 ] || fail "previous admin key still authenticates after rotate-root"
 "$V" read litellm/config >/dev/null || fail "plugin unusable after rotate-root"
-pass "rotate-root replaced the admin key ($(grep -q successor "$SCRATCH/rotate.txt" && echo successor path || echo regenerate path))"
+if [ "$EDITION" = enterprise ]; then
+  grep -q successor "$SCRATCH/rotate.txt" && fail "rotate-root took the successor path on an Enterprise instance"
+else
+  grep -q successor "$SCRATCH/rotate.txt" || fail "rotate-root did not take the successor path on a community instance"
+fi
+pass "rotate-root replaced the admin key by the $EDITION path"
 
 "$V" write litellm/roles/e2e ttl=10m max_ttl=15m \
   key_request='{"models":["qwen-a3b"],"max_budget":0.05,"rpm_limit":10,"metadata":{"suite":"e2e"}}' >/dev/null
@@ -102,23 +114,48 @@ sleep 35
 [ "$(key_status "$K2")" = 404 ] || fail "key survived its lease expiring"
 pass "expired lease deleted the key"
 
+# Attribution: the root token has no entity, so a templated role must refuse
+# it; a userpass login has one, and its alias name must reach LiteLLM.
+"$V" auth enable userpass >/dev/null
+ACCESSOR=$("$V" auth list -format=json | python3 -c 'import json,sys;print(json.load(sys.stdin)["userpass/"]["accessor"])')
+"$V" write litellm/roles/stamped ttl=5m key_request='{"models":["qwen-a3b"]}' \
+  user_id_template="{{identity.entity.aliases.$ACCESSOR.name}}" >/dev/null
+"$V" read litellm/creds/stamped >"$SCRATCH/root-read.txt" 2>&1 && fail "templated role issued a key to the root token"
+grep -q 'no entity' "$SCRATCH/root-read.txt" || fail "unexpected refusal: $(cat "$SCRATCH/root-read.txt")"
+printf 'path "litellm/creds/stamped" { capabilities = ["read"] }\n' | "$V" policy write e2e-person - >/dev/null
+"$V" write auth/userpass/users/e2e-person password=e2e-password policies=e2e-person >/dev/null
+PERSON_TOKEN=$("$V" login -method=userpass -token-only username=e2e-person password=e2e-password)
+STAMPED=$(VAULT_TOKEN="$PERSON_TOKEN" "$V" read -field=token_id litellm/creds/stamped)
+[ "$(curl -sS -H "$MH" "$LITELLM_URL/key/info?key=$STAMPED" | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["user_id"])')" = e2e-person ] \
+  || fail "stamped user_id did not reach LiteLLM"
+pass "identity template refused the root token and stamped the userpass alias as user_id"
+
 SALIAS="vault-e2e-static"
 ORIG=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
   -d "{\"key_alias\":\"$SALIAS\",\"duration\":\"10m\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])')
-"$V" write litellm/static-roles/svc key_alias="$SALIAS" 2>&1 | grep -q 'regenerated' || fail "bind gave no regeneration warning"
-[ "$(auth_status "$ORIG")" = 401 ] || fail "original key still authenticates after bind"
-SKEY=$("$V" read -field=key litellm/static-creds/svc)
-[ "$(auth_status "$SKEY")" = 200 ] || fail "static-creds key does not authenticate"
-[ "$("$V" read -field=key litellm/static-creds/svc)" = "$SKEY" ] || fail "second static-creds read changed the key"
-pass "static role bound: Vault holds the regenerated key, the original is dead"
-"$V" write -f litellm/rotate-role/svc >/dev/null
-SKEY2=$("$V" read -field=key litellm/static-creds/svc)
-[ "$(auth_status "$SKEY")" = 401 ] && [ "$(auth_status "$SKEY2")" = 200 ] || fail "rotate-role did not swap the live key"
-pass "rotate-role regenerated the static key"
-"$V" delete litellm/static-roles/svc >/dev/null
-[ "$(key_status "$SKEY2")" = 200 ] || fail "deleting the static role removed the key from LiteLLM"
-curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d "{\"key_aliases\":[\"$SALIAS\"]}" >/dev/null
-pass "static role deleted, key left in LiteLLM until removed by hand"
+if [ "$EDITION" = community ]; then
+  "$V" write litellm/static-roles/svc key_alias="$SALIAS" >"$SCRATCH/bind.txt" 2>&1 && fail "static bind succeeded on a community instance"
+  grep -q Enterprise "$SCRATCH/bind.txt" || fail "static bind refused for the wrong reason: $(cat "$SCRATCH/bind.txt")"
+  "$V" read litellm/static-roles/svc >/dev/null 2>&1 && fail "static role stored despite the refused bind"
+  [ "$(auth_status "$ORIG")" = 200 ] || fail "pre-existing key harmed by the refused bind"
+  curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d "{\"key_aliases\":[\"$SALIAS\"]}" >/dev/null
+  pass "community: static bind refused with LiteLLM's licence error, nothing stored, key untouched"
+else
+  "$V" write litellm/static-roles/svc key_alias="$SALIAS" 2>&1 | grep -q 'regenerated' || fail "bind gave no regeneration warning"
+  [ "$(auth_status "$ORIG")" = 401 ] || fail "original key still authenticates after bind"
+  SKEY=$("$V" read -field=key litellm/static-creds/svc)
+  [ "$(auth_status "$SKEY")" = 200 ] || fail "static-creds key does not authenticate"
+  [ "$("$V" read -field=key litellm/static-creds/svc)" = "$SKEY" ] || fail "second static-creds read changed the key"
+  pass "static role bound: Vault holds the regenerated key, the original is dead"
+  "$V" write -f litellm/rotate-role/svc >/dev/null
+  SKEY2=$("$V" read -field=key litellm/static-creds/svc)
+  [ "$(auth_status "$SKEY")" = 401 ] && [ "$(auth_status "$SKEY2")" = 200 ] || fail "rotate-role did not swap the live key"
+  pass "rotate-role regenerated the static key"
+  "$V" delete litellm/static-roles/svc >/dev/null
+  [ "$(key_status "$SKEY2")" = 200 ] || fail "deleting the static role removed the key from LiteLLM"
+  curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d "{\"key_aliases\":[\"$SALIAS\"]}" >/dev/null
+  pass "static role deleted, key left in LiteLLM until removed by hand"
+fi
 
 remove_admin_identity
 LEFT=$(curl -sS -H "$MH" "$LITELLM_URL/key/list?key_alias=vault-e2e-&substring_matching=true" | python3 -c 'import json,sys;print(json.load(sys.stdin)["total_count"])')

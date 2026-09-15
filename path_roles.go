@@ -16,9 +16,11 @@ const rolePath = "roles/"
 var reservedKeyRequestFields = []string{"key", "key_alias", "duration"}
 
 type roleEntry struct {
-	TTL        time.Duration  `json:"ttl"`
-	MaxTTL     time.Duration  `json:"max_ttl"`
-	KeyRequest map[string]any `json:"key_request"`
+	TTL            time.Duration  `json:"ttl"`
+	MaxTTL         time.Duration  `json:"max_ttl"`
+	KeyRequest     map[string]any `json:"key_request"`
+	UserIDTemplate string         `json:"user_id_template"`
+	TeamIDTemplate string         `json:"team_id_template"`
 }
 
 func (b *backend) pathRoles() *framework.Path {
@@ -45,6 +47,14 @@ func (b *backend) pathRoles() *framework.Path {
 			"key_request": {
 				Type:        framework.TypeString,
 				Description: "JSON object sent as the body of LiteLLM's POST /key/generate. The key, key_alias and duration fields are set by Vault and may not be given here.",
+			},
+			"user_id_template": {
+				Type:        framework.TypeString,
+				Description: "Identity template resolved against the caller and sent as the key's user_id, e.g. {{identity.entity.aliases.<mount accessor>.name}}. A key is refused when it cannot resolve.",
+			},
+			"team_id_template": {
+				Type:        framework.TypeString,
+				Description: "Identity template resolved against the caller and sent as the key's team_id, e.g. {{identity.groups.names.<group>.metadata.litellm_team_id}}. A key is refused when it cannot resolve.",
 			},
 		},
 		ExistenceCheck: b.roleExistenceCheck,
@@ -93,6 +103,23 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 	if v, ok := d.GetOk("max_ttl"); ok {
 		role.MaxTTL = time.Duration(v.(int)) * time.Second
 	}
+	for _, f := range []string{"user_id_template", "team_id_template"} {
+		v, ok := d.GetOk(f)
+		if !ok {
+			continue
+		}
+		tpl := v.(string)
+		if tpl != "" {
+			if _, err := framework.ValidateIdentityTemplate(tpl); err != nil {
+				return logical.ErrorResponse("%s: %s", f, err), nil
+			}
+		}
+		if f == "user_id_template" {
+			role.UserIDTemplate = tpl
+		} else {
+			role.TeamIDTemplate = tpl
+		}
+	}
 	if v, ok := d.GetOk("key_request"); ok {
 		var parsed map[string]any
 		if err := json.Unmarshal([]byte(v.(string)), &parsed); err != nil {
@@ -129,9 +156,11 @@ func (b *backend) pathRoleRead(ctx context.Context, req *logical.Request, d *fra
 	}
 	return &logical.Response{
 		Data: map[string]any{
-			"ttl":         int64(role.TTL.Seconds()),
-			"max_ttl":     int64(role.MaxTTL.Seconds()),
-			"key_request": role.KeyRequest,
+			"ttl":              int64(role.TTL.Seconds()),
+			"max_ttl":          int64(role.MaxTTL.Seconds()),
+			"key_request":      role.KeyRequest,
+			"user_id_template": role.UserIDTemplate,
+			"team_id_template": role.TeamIDTemplate,
 		},
 	}, nil
 }

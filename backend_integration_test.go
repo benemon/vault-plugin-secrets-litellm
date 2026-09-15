@@ -212,3 +212,30 @@ func TestIntegration_RotateRoot(t *testing.T) {
 		t.Logf("successor path taken: %d warnings", len(resp.Warnings))
 	}
 }
+
+func TestIntegration_IdentityStamping(t *testing.T) {
+	c := integrationClient(t)
+	ctx := context.Background()
+	b, s := getBackend(t)
+	writeConfig(t, b, s, map[string]any{"url": c.baseURL, "admin_key": c.adminKey})
+	entity := withCaller(t, b)
+	stamp := "vault-it-" + time.Now().UTC().Format("150405")
+	sys := b.System().(*logical.StaticSystemView)
+	sys.EntityVal.Aliases[0].Name = stamp + "@example.com"
+	sys.GroupsVal[0].Metadata["litellm_team_id"] = stamp + "-team"
+	writeRole(t, b, s, "stamped", map[string]any{
+		"key_request":      `{"models":["qwen-a3b"]}`,
+		"user_id_template": "{{identity.entity.aliases." + oidcAccessor + ".name}}",
+		"team_id_template": "{{identity.groups.names.project-x.metadata.litellm_team_id}}",
+	})
+	resp, err := readCredsAs(t, b, s, "stamped", entity)
+	if err != nil || resp.IsError() {
+		t.Fatalf("resp %v err %v", resp, err)
+	}
+	alias := resp.Data["key_alias"].(string)
+	t.Cleanup(func() { c.deleteKeyByAlias(ctx, alias) })
+	info := liveKeyInfo(t, c, resp.Data["token_id"].(string))
+	if info["user_id"] != stamp+"@example.com" || info["team_id"] != stamp+"-team" {
+		t.Fatalf("LiteLLM key carries user_id=%v team_id=%v", info["user_id"], info["team_id"])
+	}
+}
