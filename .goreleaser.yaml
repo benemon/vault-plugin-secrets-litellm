@@ -1,0 +1,65 @@
+version: 2
+project_name: vault-plugin-secrets-litellm
+
+builds:
+  - main: ./cmd/vault-plugin-secrets-litellm
+    binary: vault-plugin-secrets-litellm
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -X github.com/benemon/vault-plugin-secrets-litellm.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    # Vault 2.0 release targets; a plugin only runs where the server does.
+    targets:
+      - linux_386
+      - linux_amd64
+      - linux_arm64
+      - darwin_amd64
+      - darwin_arm64
+      - freebsd_386
+      - freebsd_amd64
+      - windows_386
+      - windows_amd64
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
+
+sboms:
+  - artifacts: archive
+
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-certificate=${certificate}
+      - --output-signature=${signature}
+      - ${artifact}
+    artifacts: checksum
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^chore"
+
+release:
+  prerelease: auto
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
