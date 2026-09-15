@@ -113,6 +113,9 @@ func TestIntegration_StaticRoleLifecycle(t *testing.T) {
 	t.Cleanup(func() { c.deleteKeyByAlias(ctx, alias) })
 
 	resp, err := handle(t, b, s, logical.UpdateOperation, staticRolePath+"svc", map[string]any{"key_alias": alias})
+	if err != nil && strings.Contains(err.Error(), "Enterprise") {
+		t.Skip("static roles need a licensed LiteLLM instance")
+	}
 	if err != nil || resp.IsError() || len(resp.Warnings) != 1 {
 		t.Fatalf("bind: resp %v err %v", resp, err)
 	}
@@ -145,8 +148,8 @@ func TestIntegration_StaticRoleLifecycle(t *testing.T) {
 	}
 }
 
-// authStatus is LiteLLM's answer to a key listing models: 200 for a live
-// key, 401 for a dead one, with no inference involved.
+// authStatus returns LiteLLM's status for key at /v1/models: 200 live, 401
+// dead, no inference involved.
 func authStatus(t *testing.T, c *client, key string) int {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, c.baseURL+"/v1/models", nil)

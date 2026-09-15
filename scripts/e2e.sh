@@ -17,6 +17,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
 key_status() { curl -sS -o /dev/null -w '%{http_code}' -H "$MH" "$LITELLM_URL/key/info?key=$1"; }
 key_expires() { curl -sS -H "$MH" "$LITELLM_URL/key/info?key=$1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["expires"])'; }
+auth_status() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$LITELLM_URL/v1/models"; }
 to_epoch() { python3 -c 'import sys,datetime;print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")).timestamp()))' "$1"; }
 
 mkdir -p "$SCRATCH/plugins"
@@ -83,10 +84,8 @@ sleep 35
 pass "expired lease deleted the key"
 
 SALIAS="vault-e2e-static"
-curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
-  -d "{\"key_alias\":\"$SALIAS\",\"duration\":\"10m\"}" >"$SCRATCH/orig.json"
-ORIG=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["key"])' "$SCRATCH/orig.json")
-auth_status() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$LITELLM_URL/v1/models"; }
+ORIG=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
+  -d "{\"key_alias\":\"$SALIAS\",\"duration\":\"10m\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])')
 "$V" write litellm/static-roles/svc key_alias="$SALIAS" 2>&1 | grep -q 'regenerated' || fail "bind gave no regeneration warning"
 [ "$(auth_status "$ORIG")" = 401 ] || fail "original key still authenticates after bind"
 SKEY=$("$V" read -field=key litellm/static-creds/svc)

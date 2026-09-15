@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -26,7 +27,25 @@ func (b *backend) pathStaticCreds() *framework.Path {
 			},
 		},
 		Operations: map[logical.Operation]framework.OperationHandler{
-			logical.ReadOperation: &framework.PathOperation{Callback: b.pathStaticCredsRead},
+			logical.ReadOperation: &framework.PathOperation{
+				Callback: b.pathStaticCredsRead,
+				Responses: map[int][]framework.Response{
+					http.StatusOK: {{
+						Description: "OK",
+						Fields: map[string]*framework.FieldSchema{
+							"key": {
+								Type:        framework.TypeString,
+								Description: "The LiteLLM virtual key.",
+								DisplayAttrs: &framework.DisplayAttributes{
+									Sensitive: true,
+								},
+							},
+							"key_alias": {Type: framework.TypeString},
+							"token_id":  {Type: framework.TypeString},
+						},
+					}},
+				},
+			},
 		},
 		HelpSynopsis:    "Read the key held for a static role.",
 		HelpDescription: "Returns the key Vault stored at bind or last rotation. Fails if the key was regenerated or deleted outside Vault.",

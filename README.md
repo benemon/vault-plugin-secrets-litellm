@@ -4,9 +4,9 @@ LiteLLM virtual keys are created by hand in the proxy, live until someone
 deletes them, and leave no record of who holds them. This Vault secrets
 engine issues them on demand instead. Each key is generated through LiteLLM's
 own key API, bound to a Vault lease, extended when the lease is renewed and
-deleted when the lease ends or is revoked. A static role instead binds one
-existing key by alias, so consumers that share a long-lived key fetch it from
-Vault and Vault rotates it.
+deleted when the lease ends or is revoked. A static role binds one existing
+key by alias and serves the same key to every reader until an operator
+rotates it through Vault.
 
 ## Setup
 
@@ -111,28 +111,53 @@ token_id           6de8743f...
 
 ### Bind a static role
 
+> [!IMPORTANT]
+> Static roles require a LiteLLM Enterprise licence. Bind and rotation call
+> `/key/{token_id}/regenerate`, which a community instance refuses with a
+> licence error. Dynamic roles need no licence.
+
 ```sh
 vault write litellm/static-roles/svc key_alias=team-blue
+```
+
+```
+WARNING! The following warnings were returned from Vault:
+
+  * LiteLLM key "team-blue" was regenerated; its previous value no longer
+  works. Read static-creds/svc for the current key.
+```
+
+The alias must name an existing LiteLLM key that no other static role binds.
+The write regenerates the key, so any consumer holding the previous value
+loses access at that moment. `vault read litellm/static-roles/svc` returns
+`key_alias` and `token_id`. `vault list litellm/static-roles` lists the
+roles. `vault delete litellm/static-roles/svc` removes Vault's copy and
+leaves the key in LiteLLM.
+
+### Read a static key
+
+```sh
 vault read litellm/static-creds/svc
+```
+
+```
+Key          Value
+---          -----
+key          sk-...
+key_alias    team-blue
+token_id     4c1f0e2a...
+```
+
+There is no lease. Every read returns the same key until the role is rotated.
+
+### Rotate a static key
+
+```sh
 vault write -f litellm/rotate-role/svc
 ```
 
-Binding requires a LiteLLM Enterprise licence, because the plugin calls
-`/key/regenerate`. LiteLLM returns a key's plaintext only when it creates or
-regenerates the key, so binding regenerates it once. From that moment Vault
-holds the only copy and every consumer must read it from `static-creds`. The
-write returns a warning saying the previous key no longer works. Bind during
-the cutover for that key.
-
-`static-creds/<name>` returns the stored key, its alias and its current hash,
-with no lease. Reads never touch the key. Before serving, the plugin confirms
-the hash still exists in LiteLLM. If the key was regenerated or deleted
-outside Vault, the read fails with a message pointing at `rotate-role`, which
-looks the key up by alias, regenerates it and stores the result.
-
-One static role binds one alias, and one alias binds to one static role. The
-role's `key_alias` cannot be changed. Deleting the role removes Vault's copy
-and leaves the key in LiteLLM.
+The key is regenerated and the previous value stops working. The same
+warning as on bind is returned.
 
 ## Lease behaviour
 
@@ -158,12 +183,41 @@ alias. A `404` from LiteLLM is treated as success, so a key LiteLLM already
 expired, or an operator already removed, does not block revocation.
 
 `token_id` is the SHA-256 of the key and is the identifier LiteLLM shows in
-its key list and spend logs. Vault storage holds the alias and `token_id` in
-the lease and never the key itself. The key appears in the `creds` response
-and nowhere in Vault after that.
+its key list and spend logs. For dynamic keys, Vault storage holds the alias
+and `token_id` in the lease and never the key itself. The key appears in the
+`creds` response only.
 
 The [LiteLLM virtual keys documentation](https://docs.litellm.ai/docs/proxy/virtual_keys)
 describes the key API, alias rules and the Enterprise-only endpoints.
+
+## Static key custody
+
+> [!IMPORTANT]
+> Everything in this section depends on `/key/regenerate`, a LiteLLM
+> Enterprise endpoint.
+
+LiteLLM returns a key's plaintext once, from `/key/generate` or
+`/key/{token_id}/regenerate`, and stores only the hash. A static role
+therefore takes ownership of its key by calling regenerate at bind, and Vault
+keeps the returned plaintext in the role's storage entry. That entry sits
+under the `static-roles/` prefix, which the plugin registers for seal
+wrapping. Reads serve the stored copy without regenerating.
+
+The plugin verifies the alias exists and refuses a bind when `key_alias` is
+missing, when the alias names no LiteLLM key, when another static role
+already binds the alias, or when the role already exists. A bound role cannot
+be rewritten. Delete it and bind again.
+
+LiteLLM stays the authority on the key's existence and settings. Before
+serving a read, the plugin checks that the stored hash still names a key. If
+the key was regenerated or deleted outside Vault, the read fails and names
+`rotate-role/<name>` as the recovery. Rotation looks the key up by alias and
+regenerates, so it recovers from an outside regeneration. It refuses when
+the role does not exist or when no key carries the alias any more.
+
+Regenerate keeps the alias, limits, budget, spend and expiry and changes the
+hash. There is no overlap window. The previous value stops working when the
+regenerate call returns.
 
 ## API
 
@@ -207,11 +261,8 @@ LiteLLM's error envelope, truncated to 200 bytes.
 
 ## Limits
 
-- Static roles need a LiteLLM Enterprise licence. On a community instance
-  the bind fails with LiteLLM's licence error. Dynamic roles work on both.
-- Regenerate gives no overlap window. The previous key dies the instant a
-  bind or rotation completes, unlike LDAP rotation where the old password
-  can linger briefly.
+- Static roles need a LiteLLM Enterprise licence. See
+  [Bind a static role](#bind-a-static-role).
 - Rotation of static keys is on demand only. There is no `rotation_period`.
 - There is no `rotate-root`. LiteLLM has no API for rotating the master key.
 - The Vault UI has no screens for external secrets engines. The mount is
@@ -231,7 +282,8 @@ make run           # dev server with the plugin registered and mounted at litell
 ```
 
 `make integration` and `make e2e` need `LITELLM_URL` and
-`LITELLM_MASTER_KEY`. `make run` and `make e2e` start `vault server -dev` from
+`LITELLM_MASTER_KEY`. The static-role steps need a licensed instance. The
+integration test skips them on a community instance and `make e2e` fails. `make run` and `make e2e` start `vault server -dev` from
 `VAULT_BIN`, defaulting to the `vault` on your path. On macOS keep the plugin
 directory outside `/tmp`. Vault rejects it because `/tmp` resolves to
 `/private/tmp`.

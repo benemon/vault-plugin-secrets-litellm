@@ -52,5 +52,5 @@ func (b *backend) pathRotateRoleWrite(ctx context.Context, req *logical.Request,
 	if tokenID == "" {
 		return logical.ErrorResponse("no LiteLLM key has alias %q; the key was deleted outside Vault", role.KeyAlias), nil
 	}
-	return b.regenerateStaticRole(ctx, req.Storage, name, role.KeyAlias, tokenID)
+	return regenerateStaticRole(ctx, req.Storage, c, name, role.KeyAlias, tokenID)
 }

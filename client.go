@@ -85,16 +85,17 @@ func (c *client) findKeyByAlias(ctx context.Context, alias string) (string, erro
 // settings; the previous plaintext stops working at once. Enterprise only.
 func (c *client) regenerateKey(ctx context.Context, tokenID string) (*generatedKey, error) {
 	var out generatedKey
+	// LiteLLM rejects a regenerate call with no body, so an empty object is sent.
 	if err := c.do(ctx, http.MethodPost, "/key/"+tokenID+"/regenerate", map[string]any{}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// checkKey is a 404 when the hash no longer names a key, which is what a
-// regeneration or deletion outside Vault looks like.
+// checkKey returns a 404 apiError when the hash no longer names a key, which
+// is what regeneration or deletion outside Vault looks like.
 func (c *client) checkKey(ctx context.Context, tokenID string) error {
-	return c.do(ctx, http.MethodGet, "/key/info?key="+tokenID, nil, nil)
+	return c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(tokenID), nil, nil)
 }
 
 // checkAdminKey lets LiteLLM's own auth gate decide whether the admin key works.

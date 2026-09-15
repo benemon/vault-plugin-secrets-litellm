@@ -99,15 +99,10 @@ func (b *backend) pathStaticRoleWrite(ctx context.Context, req *logical.Request,
 	if tokenID == "" {
 		return logical.ErrorResponse("no LiteLLM key has alias %q", alias), nil
 	}
-	return b.regenerateStaticRole(ctx, req.Storage, name, alias, tokenID)
+	return regenerateStaticRole(ctx, req.Storage, c, name, alias, tokenID)
 }
 
-// regenerateStaticRole takes ownership of the key and stores the result.
-func (b *backend) regenerateStaticRole(ctx context.Context, s logical.Storage, name, alias, tokenID string) (*logical.Response, error) {
-	c, err := getClient(ctx, s)
-	if err != nil {
-		return nil, err
-	}
+func regenerateStaticRole(ctx context.Context, s logical.Storage, c *client, name, alias, tokenID string) (*logical.Response, error) {
 	key, err := c.regenerateKey(ctx, tokenID)
 	if err != nil {
 		return nil, err
