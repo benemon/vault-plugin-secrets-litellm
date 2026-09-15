@@ -59,16 +59,18 @@ Register and enable the engine:
      --certificate-identity-regexp 'https://github.com/benemon/vault-plugin-secrets-litellm/' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      vault-plugin-secrets-litellm_<version>_SHA256SUMS
-   gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.tar.gz \
+   gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.zip \
      --repo benemon/vault-plugin-secrets-litellm
    ```
 
 3. Register it under the catalog name `litellm`, passing the checksum of the
-   installed binary and the release version. The catalog name becomes the
-   engine type and the prefix of the mount accessor. On Vault Enterprise the
-   plugin catalog belongs to the root namespace, so run this with a
-   root-namespace token even when the engine will be mounted in a child
-   namespace.
+   installed binary and the release version. The released `SHA256SUMS` file
+   verifies the downloaded archive; Vault needs the checksum of the extracted
+   binary it will execute, which is not in that file, so compute it on the
+   installed file. The catalog name becomes the engine type and the prefix of
+   the mount accessor. On Vault Enterprise the plugin catalog belongs to the
+   root namespace, so run this with a root-namespace token even when the
+   engine will be mounted in a child namespace.
 
    ```sh
    vault plugin register \
