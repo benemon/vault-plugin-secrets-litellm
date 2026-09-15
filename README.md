@@ -21,11 +21,23 @@ Prerequisites:
 
 Register and enable the engine:
 
-1. Build the plugin and copy `bin/vault-plugin-secrets-litellm` into the
-   plugin directory.
+1. Download the archive for the Vault server's platform from the
+   [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases)
+   and copy `vault-plugin-secrets-litellm` into the plugin directory. To
+   build from source instead, run `make dev` and use `bin/vault-plugin-secrets-litellm`.
+
+   Each release ships a `SHA256SUMS` file signed with Sigstore Cosign, a
+   CycloneDX SBOM per archive, and a GitHub build-provenance attestation:
 
    ```sh
-   make dev
+   cosign verify-blob \
+     --certificate vault-plugin-secrets-litellm_<version>_SHA256SUMS.pem \
+     --signature vault-plugin-secrets-litellm_<version>_SHA256SUMS.sig \
+     --certificate-identity-regexp 'https://github.com/benemon/vault-plugin-secrets-litellm/' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     vault-plugin-secrets-litellm_<version>_SHA256SUMS
+   gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.tar.gz \
+     --repo benemon/vault-plugin-secrets-litellm
    ```
 
 2. Register it under the catalog name `litellm`. The catalog name becomes the
@@ -279,7 +291,11 @@ make test          # unit tests against an in-process fake LiteLLM
 make integration   # tagged tests against a live instance
 make e2e           # full lifecycle through a Vault dev server and a live instance
 make run           # dev server with the plugin registered and mounted at litellm/
+make snapshot      # cross-build every release target into dist/
 ```
+
+Releases are cut by pushing a `v*` tag that points at a commit on `main`.
+The release workflow refuses any other tag.
 
 `make integration` and `make e2e` need `LITELLM_URL` and
 `LITELLM_MASTER_KEY`. The static-role steps need a licensed instance. The

@@ -35,3 +35,8 @@ fmt:
 .PHONY: e2e
 e2e:
 	@sh -c "'$(CURDIR)/scripts/e2e.sh'"
+
+# Cross-builds every release target into dist/ without publishing.
+.PHONY: snapshot
+snapshot:
+	go run github.com/goreleaser/goreleaser/v2@v2.18.1 release --snapshot --clean --skip=sign,sbom
