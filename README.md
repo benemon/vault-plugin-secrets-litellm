@@ -59,7 +59,7 @@ Register and enable the engine:
      --certificate-identity-regexp 'https://github.com/benemon/vault-plugin-secrets-litellm/' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      vault-plugin-secrets-litellm_<version>_SHA256SUMS
-   gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.tar.gz \
+   gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.zip \
      --repo benemon/vault-plugin-secrets-litellm
    ```
 
