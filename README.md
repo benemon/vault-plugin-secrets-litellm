@@ -22,9 +22,16 @@ Prerequisites:
 Register and enable the engine:
 
 1. Download the archive for the Vault server's platform from the
-   [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases)
-   and copy `vault-plugin-secrets-litellm` into the plugin directory. To
-   build from source instead, run `make dev` and use `bin/vault-plugin-secrets-litellm`.
+   [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases),
+   extract `vault-plugin-secrets-litellm`, and place it in the plugin
+   directory owned by the user Vault runs as and executable by it:
+
+   ```sh
+   install -o vault -g vault -m 0755 vault-plugin-secrets-litellm /etc/vault.d/plugins/
+   ```
+
+   To build from source instead, run `make dev` and install
+   `bin/vault-plugin-secrets-litellm` the same way.
 
    Each release ships a `SHA256SUMS` file with a Sigstore Cosign bundle, a
    SPDX SBOM per archive, and a GitHub build-provenance attestation:
@@ -39,16 +46,21 @@ Register and enable the engine:
      --repo benemon/vault-plugin-secrets-litellm
    ```
 
-2. Register it under the catalog name `litellm`. The catalog name becomes the
-   engine type and the prefix of the mount accessor.
+2. Register it under the catalog name `litellm`, passing the checksum of the
+   installed binary and the release version. The catalog name becomes the
+   engine type and the prefix of the mount accessor. On Vault Enterprise the
+   plugin catalog belongs to the root namespace, so run this with a
+   root-namespace token even when the engine will be mounted in a child
+   namespace.
 
    ```sh
    vault plugin register \
-     -sha256="$(shasum -a 256 bin/vault-plugin-secrets-litellm | cut -d' ' -f1)" \
+     -sha256="$(sha256sum /etc/vault.d/plugins/vault-plugin-secrets-litellm | cut -d' ' -f1)" \
+     -version=v0.1.0 \
      -command=vault-plugin-secrets-litellm secret litellm
    ```
 
-3. Enable it.
+3. Enable it, in whichever namespace the engine should live.
 
    ```sh
    vault secrets enable -path=litellm litellm
