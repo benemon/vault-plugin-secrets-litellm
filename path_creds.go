@@ -99,24 +99,28 @@ func (b *backend) pathCredsRead(ctx context.Context, req *logical.Request, d *fr
 	body["metadata"] = metadata
 	body["key_alias"] = alias
 	body["duration"] = litellmDuration(ttl)
-	for field, tpl := range map[string]string{"user_id": role.UserIDTemplate, "team_id": role.TeamIDTemplate} {
-		if tpl == "" {
+	templates := []struct{ field, tpl string }{
+		{"user_id", role.UserIDTemplate},
+		{"team_id", role.TeamIDTemplate},
+	}
+	for _, t := range templates {
+		if t.tpl == "" {
 			continue
 		}
-		if _, explicit := body[field]; explicit {
+		if explicit, _ := role.KeyRequest[t.field].(string); explicit != "" {
 			continue
 		}
 		if req.EntityID == "" {
-			return logical.ErrorResponse("%s_template is set but the caller's token has no entity", field), nil
+			return logical.ErrorResponse("%s_template is set but the caller's token has no entity", t.field), nil
 		}
-		value, err := framework.PopulateIdentityTemplate(tpl, req.EntityID, b.System())
+		value, err := framework.PopulateIdentityTemplate(t.tpl, req.EntityID, b.System())
 		if err != nil {
-			return logical.ErrorResponse("%s_template %q did not resolve for this caller: %s", field, tpl, err), nil
+			return logical.ErrorResponse("%s_template %q did not resolve for this caller: %s", t.field, t.tpl, err), nil
 		}
 		if value == "" {
-			return logical.ErrorResponse("%s_template %q resolved to an empty value for this caller", field, tpl), nil
+			return logical.ErrorResponse("%s_template %q resolved to an empty value for this caller", t.field, t.tpl), nil
 		}
-		body[field] = value
+		body[t.field] = value
 	}
 
 	key, err := c.generateKey(ctx, body)

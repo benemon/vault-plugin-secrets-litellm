@@ -1,7 +1,6 @@
 package litellm
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -10,9 +9,9 @@ import (
 
 const oidcAccessor = "auth_oidc_1234"
 
-// withCaller gives the test system view an entity with an OIDC alias and a
-// group carrying a LiteLLM team id, as an IdP-backed login would produce.
-func withCaller(t *testing.T, b *backend) string {
+// withCaller shapes the test system view as an IdP-backed login would: an
+// entity with an OIDC alias and a group carrying a LiteLLM team id.
+func withCaller(t *testing.T, b *backend, aliasName, teamID string) string {
 	t.Helper()
 	sys := b.System().(*logical.StaticSystemView)
 	sys.EntityVal = &logical.Entity{
@@ -21,22 +20,16 @@ func withCaller(t *testing.T, b *backend) string {
 		Aliases: []*logical.Alias{{
 			MountAccessor: oidcAccessor,
 			MountType:     "oidc",
-			Name:          "ben@example.com",
+			Name:          aliasName,
 		}},
+		Metadata: map[string]string{"blank": ""},
 	}
 	sys.GroupsVal = []*logical.Group{{
 		ID:       "group-1",
 		Name:     "project-x",
-		Metadata: map[string]string{"litellm_team_id": "team-42"},
+		Metadata: map[string]string{"litellm_team_id": teamID},
 	}}
 	return "entity-1"
-}
-
-func readCredsAs(t *testing.T, b *backend, s logical.Storage, name, entityID string) (*logical.Response, error) {
-	t.Helper()
-	return b.HandleRequest(context.Background(), &logical.Request{
-		Operation: logical.ReadOperation, Path: credsPath + name, Storage: s, EntityID: entityID, ID: "req-1",
-	})
 }
 
 func TestCreds_IdentityTemplates(t *testing.T) {
@@ -45,8 +38,8 @@ func TestCreds_IdentityTemplates(t *testing.T) {
 		"user_id_template": "{{identity.entity.aliases." + oidcAccessor + ".name}}",
 		"team_id_template": "{{identity.groups.names.project-x.metadata.litellm_team_id}}",
 	})
-	entity := withCaller(t, b)
-	resp, err := readCredsAs(t, b, s, "app", entity)
+	entity := withCaller(t, b, "ben@example.com", "team-42")
+	resp, err := readCreds(t, b, s, "app", entity)
 	if err != nil || resp.IsError() {
 		t.Fatalf("resp %v err %v", resp, err)
 	}
@@ -62,26 +55,34 @@ func TestCreds_IdentityTemplates(t *testing.T) {
 
 func TestCreds_IdentityTemplatesStrict(t *testing.T) {
 	f, b, s := setupCreds(t, map[string]any{"user_id_template": "{{identity.entity.aliases." + oidcAccessor + ".name}}"})
-	resp, err := readCredsAs(t, b, s, "app", "")
+	resp, err := readCreds(t, b, s, "app", "")
 	if err != nil || !resp.IsError() || !strings.Contains(resp.Error().Error(), "no entity") {
 		t.Fatalf("no entity: resp %v err %v", resp, err)
 	}
 
 	sys := b.System().(*logical.StaticSystemView)
 	sys.EntityVal = &logical.Entity{ID: "entity-2", Name: "no-oidc-alias"}
-	resp, err = readCredsAs(t, b, s, "app", "entity-2")
+	resp, err = readCreds(t, b, s, "app", "entity-2")
 	if err != nil || !resp.IsError() || !strings.Contains(resp.Error().Error(), "did not resolve") {
 		t.Fatalf("missing alias: resp %v err %v", resp, err)
 	}
-	if f.count() != 0 {
-		t.Fatal("a key was issued despite the template failing")
-	}
 
-	writeRole(t, b, s, "app", map[string]any{"team_id_template": "{{identity.groups.names.other.metadata.litellm_team_id}}", "user_id_template": ""})
-	withCaller(t, b)
-	resp, _ = readCredsAs(t, b, s, "app", "entity-1")
+	if resp := writeRole(t, b, s, "app", map[string]any{"team_id_template": "{{identity.groups.names.other.metadata.litellm_team_id}}", "user_id_template": ""}); resp != nil && resp.IsError() {
+		t.Fatal(resp.Error())
+	}
+	entity := withCaller(t, b, "ben@example.com", "team-42")
+	resp, _ = readCreds(t, b, s, "app", entity)
 	if !resp.IsError() || !strings.Contains(resp.Error().Error(), "team_id_template") {
 		t.Fatalf("missing group: %v", resp)
+	}
+
+	writeRole(t, b, s, "app", map[string]any{"team_id_template": "", "user_id_template": "{{identity.entity.metadata.blank}}"})
+	resp, _ = readCreds(t, b, s, "app", entity)
+	if !resp.IsError() || !strings.Contains(resp.Error().Error(), "empty value") {
+		t.Fatalf("empty metadata value: %v", resp)
+	}
+	if f.count() != 0 {
+		t.Fatal("a key was issued despite a template failing")
 	}
 }
 
@@ -91,13 +92,20 @@ func TestCreds_ExplicitBeatsTemplate(t *testing.T) {
 		"user_id_template": "{{identity.entity.id}}",
 		"team_id_template": "{{identity.entity.name}}",
 	})
-	resp, err := readCredsAs(t, b, s, "app", "")
+	resp, err := readCreds(t, b, s, "app", "")
 	if err != nil || resp.IsError() {
 		t.Fatalf("explicit values should not need an entity: resp %v err %v", resp, err)
 	}
 	k := f.byAlias(resp.Data["key_alias"].(string))
 	if k.Request["user_id"] != "svc-account" || k.Request["team_id"] != "team-fixed" {
 		t.Fatalf("explicit values overridden: %v", k.Request)
+	}
+
+	// An empty or null value in key_request is not an explicit identity.
+	writeRole(t, b, s, "app", map[string]any{"key_request": `{"user_id":"","team_id":null}`})
+	resp, _ = readCreds(t, b, s, "app", "")
+	if !resp.IsError() || !strings.Contains(resp.Error().Error(), "no entity") {
+		t.Fatalf("empty key_request identity should fall through to the template: %v", resp)
 	}
 }
 

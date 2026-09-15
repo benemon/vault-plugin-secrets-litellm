@@ -103,22 +103,17 @@ func (b *backend) pathRoleWrite(ctx context.Context, req *logical.Request, d *fr
 	if v, ok := d.GetOk("max_ttl"); ok {
 		role.MaxTTL = time.Duration(v.(int)) * time.Second
 	}
-	for _, f := range []string{"user_id_template", "team_id_template"} {
-		v, ok := d.GetOk(f)
-		if !ok {
-			continue
+	if v, ok := d.GetOk("user_id_template"); ok {
+		if _, err := framework.ValidateIdentityTemplate(v.(string)); v.(string) != "" && err != nil {
+			return logical.ErrorResponse("user_id_template: %s", err), nil
 		}
-		tpl := v.(string)
-		if tpl != "" {
-			if _, err := framework.ValidateIdentityTemplate(tpl); err != nil {
-				return logical.ErrorResponse("%s: %s", f, err), nil
-			}
+		role.UserIDTemplate = v.(string)
+	}
+	if v, ok := d.GetOk("team_id_template"); ok {
+		if _, err := framework.ValidateIdentityTemplate(v.(string)); v.(string) != "" && err != nil {
+			return logical.ErrorResponse("team_id_template: %s", err), nil
 		}
-		if f == "user_id_template" {
-			role.UserIDTemplate = tpl
-		} else {
-			role.TeamIDTemplate = tpl
-		}
+		role.TeamIDTemplate = v.(string)
 	}
 	if v, ok := d.GetOk("key_request"); ok {
 		var parsed map[string]any

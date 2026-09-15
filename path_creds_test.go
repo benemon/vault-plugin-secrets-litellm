@@ -23,7 +23,7 @@ func setupCreds(t *testing.T, roleData map[string]any) (*fakeLiteLLM, *backend, 
 	return f, b, s
 }
 
-func readCreds(t *testing.T, b *backend, s logical.Storage, name string) (*logical.Response, error) {
+func readCreds(t *testing.T, b *backend, s logical.Storage, name, entityID string) (*logical.Response, error) {
 	t.Helper()
 	return b.HandleRequest(context.Background(), &logical.Request{
 		Operation:  logical.ReadOperation,
@@ -31,6 +31,7 @@ func readCreds(t *testing.T, b *backend, s logical.Storage, name string) (*logic
 		Storage:    s,
 		ID:         "req-123",
 		MountPoint: "litellm/",
+		EntityID:   entityID,
 	})
 }
 
@@ -38,7 +39,7 @@ func TestCreds_Generate(t *testing.T) {
 	spec := `{"models": ["qwen-a3b"], "metadata": {"team": "blue"}}`
 	f, b, s := setupCreds(t, map[string]any{"ttl": "5m", "max_ttl": "1h", "key_request": spec})
 
-	resp, err := readCreds(t, b, s, "app")
+	resp, err := readCreds(t, b, s, "app", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestCreds_Generate(t *testing.T) {
 
 func TestCreds_TTLDefaultsAndCap(t *testing.T) {
 	f, b, s := setupCreds(t, map[string]any{})
-	resp, err := readCreds(t, b, s, "app")
+	resp, err := readCreds(t, b, s, "app", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestCreds_TTLDefaultsAndCap(t *testing.T) {
 	}
 
 	writeRole(t, b, s, "app", map[string]any{"ttl": (b.System().MaxLeaseTTL() + time.Hour).String()})
-	resp, err = readCreds(t, b, s, "app")
+	resp, err = readCreds(t, b, s, "app", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func TestCreds_TTLDefaultsAndCap(t *testing.T) {
 
 func TestCreds_RenewAndRevoke(t *testing.T) {
 	f, b, s := setupCreds(t, map[string]any{"ttl": "5m", "max_ttl": "1h"})
-	resp, err := readCreds(t, b, s, "app")
+	resp, err := readCreds(t, b, s, "app", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,12 +160,12 @@ func TestCreds_RenewAndRevoke(t *testing.T) {
 func TestCreds_Errors(t *testing.T) {
 	f, b, s := setupCreds(t, map[string]any{"key_request": `{"tags": ["x"]}`})
 
-	resp, err := readCreds(t, b, s, "missing")
+	resp, err := readCreds(t, b, s, "missing", "")
 	if err != nil || resp == nil || !resp.IsError() || !strings.Contains(resp.Error().Error(), "not found") {
 		t.Fatalf("unknown role: resp %v err %v", resp, err)
 	}
 
-	_, err = readCreds(t, b, s, "app")
+	_, err = readCreds(t, b, s, "app", "")
 	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "Enterprise") {
 		t.Fatalf("LiteLLM rejection not surfaced: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestCreds_Errors(t *testing.T) {
 		t.Fatal("key created despite rejection")
 	}
 
-	resp, _ = readCreds(t, b, s, "app")
+	resp, _ = readCreds(t, b, s, "app", "")
 	secret := &logical.Secret{LeaseOptions: logical.LeaseOptions{IssueTime: time.Now()}, InternalData: map[string]any{"role": "gone", "token_id": "t", "key_alias": "a"}}
 	secret.InternalData["secret_type"] = secretTypeKey
 	if _, err := b.HandleRequest(context.Background(), &logical.Request{
@@ -183,7 +184,7 @@ func TestCreds_Errors(t *testing.T) {
 
 	b2, s2 := getBackend(t)
 	writeRole(t, b2, s2, "app", map[string]any{})
-	if _, err := readCreds(t, b2, s2, "app"); err == nil || !strings.Contains(err.Error(), "not configured") {
+	if _, err := readCreds(t, b2, s2, "app", ""); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("unconfigured backend: %v", err)
 	}
 }

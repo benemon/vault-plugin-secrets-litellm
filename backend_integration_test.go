@@ -33,7 +33,7 @@ func TestIntegration_BackendLifecycle(t *testing.T) {
 		t.Fatal(resp.Error())
 	}
 
-	resp, err := readCreds(t, b, s, role)
+	resp, err := readCreds(t, b, s, role, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,18 +217,19 @@ func TestIntegration_IdentityStamping(t *testing.T) {
 	c := integrationClient(t)
 	ctx := context.Background()
 	b, s := getBackend(t)
-	writeConfig(t, b, s, map[string]any{"url": c.baseURL, "admin_key": c.adminKey})
-	entity := withCaller(t, b)
+	if resp := writeConfig(t, b, s, map[string]any{"url": c.baseURL, "admin_key": c.adminKey}); resp.IsError() {
+		t.Fatal(resp.Error())
+	}
 	stamp := "vault-it-" + time.Now().UTC().Format("150405")
-	sys := b.System().(*logical.StaticSystemView)
-	sys.EntityVal.Aliases[0].Name = stamp + "@example.com"
-	sys.GroupsVal[0].Metadata["litellm_team_id"] = stamp + "-team"
-	writeRole(t, b, s, "stamped", map[string]any{
+	entity := withCaller(t, b, stamp+"@example.com", stamp+"-team")
+	if resp := writeRole(t, b, s, "stamped", map[string]any{
 		"key_request":      `{"models":["qwen-a3b"]}`,
 		"user_id_template": "{{identity.entity.aliases." + oidcAccessor + ".name}}",
 		"team_id_template": "{{identity.groups.names.project-x.metadata.litellm_team_id}}",
-	})
-	resp, err := readCredsAs(t, b, s, "stamped", entity)
+	}); resp != nil && resp.IsError() {
+		t.Fatal(resp.Error())
+	}
+	resp, err := readCreds(t, b, s, "stamped", entity)
 	if err != nil || resp.IsError() {
 		t.Fatalf("resp %v err %v", resp, err)
 	}

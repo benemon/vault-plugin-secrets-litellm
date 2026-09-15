@@ -29,6 +29,7 @@ VAULT_PID=$!
 cleanup() {
   kill -INT "$VAULT_PID" 2>/dev/null; wait "$VAULT_PID" 2>/dev/null || true
   remove_admin_identity
+  curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/delete" -d '{"user_ids":["e2e-person"]}'
   rm -rf "$SCRATCH"
 }
 remove_admin_identity() {
@@ -52,8 +53,7 @@ ADMIN_KEY=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITE
 "$V" write litellm/config url="$LITELLM_URL" admin_key="$ADMIN_KEY" >/dev/null
 pass "configured with a proxy_admin virtual key"
 
-# Regenerate is the Enterprise-gated call; probe it once to know which
-# behaviours to expect from static roles and rotate-root.
+# Regenerate is the Enterprise-gated call.
 PROBE=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" -d '{"key_alias":"vault-e2e-edition-probe","duration":"2m"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token_id"])')
 if curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/$PROBE/regenerate" -d '{}' | grep -q '"key"'; then EDITION=enterprise; else EDITION=community; fi
 curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d '{"key_aliases":["vault-e2e-edition-probe"]}'
@@ -114,21 +114,41 @@ sleep 35
 [ "$(key_status "$K2")" = 404 ] || fail "key survived its lease expiring"
 pass "expired lease deleted the key"
 
-# Attribution: the root token has no entity, so a templated role must refuse
-# it; a userpass login has one, and its alias name must reach LiteLLM.
+# The root token has no entity.
 "$V" auth enable userpass >/dev/null
 ACCESSOR=$("$V" auth list -format=json | python3 -c 'import json,sys;print(json.load(sys.stdin)["userpass/"]["accessor"])')
-"$V" write litellm/roles/stamped ttl=5m key_request='{"models":["qwen-a3b"]}' \
+"$V" write litellm/roles/e2e-stamped ttl=5m key_request='{"models":["qwen-a3b"]}' \
   user_id_template="{{identity.entity.aliases.$ACCESSOR.name}}" >/dev/null
-"$V" read litellm/creds/stamped >"$SCRATCH/root-read.txt" 2>&1 && fail "templated role issued a key to the root token"
+"$V" read litellm/creds/e2e-stamped >"$SCRATCH/root-read.txt" 2>&1 && fail "templated role issued a key to the root token"
 grep -q 'no entity' "$SCRATCH/root-read.txt" || fail "unexpected refusal: $(cat "$SCRATCH/root-read.txt")"
-printf 'path "litellm/creds/stamped" { capabilities = ["read"] }\n' | "$V" policy write e2e-person - >/dev/null
+printf 'path "litellm/creds/e2e-stamped" { capabilities = ["read"] }\n' | "$V" policy write e2e-person - >/dev/null
 "$V" write auth/userpass/users/e2e-person password=e2e-password policies=e2e-person >/dev/null
 PERSON_TOKEN=$("$V" login -method=userpass -token-only username=e2e-person password=e2e-password)
-STAMPED=$(VAULT_TOKEN="$PERSON_TOKEN" "$V" read -field=token_id litellm/creds/stamped)
-[ "$(curl -sS -H "$MH" "$LITELLM_URL/key/info?key=$STAMPED" | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["user_id"])')" = e2e-person ] \
+VAULT_TOKEN="$PERSON_TOKEN" "$V" read -format=json litellm/creds/e2e-stamped >"$SCRATCH/stamped.json"
+read -r SKEYP SLEASE STOKEN < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["data"]["key"],d["lease_id"],d["data"]["token_id"])' "$SCRATCH/stamped.json")
+[ "$(curl -sS -H "$MH" "$LITELLM_URL/key/info?key=$STOKEN" | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["user_id"])')" = e2e-person ] \
   || fail "stamped user_id did not reach LiteLLM"
 pass "identity template refused the root token and stamped the userpass alias as user_id"
+
+# Attribution outlives the key and needs no LiteLLM user record; a record
+# created afterwards picks the history up.
+curl -sS --max-time 90 -o /dev/null -H "Authorization: Bearer $SKEYP" -H 'Content-Type: application/json' \
+  -X POST "$LITELLM_URL/v1/chat/completions" -d '{"model":"qwen-a3b","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}'
+"$V" lease revoke "$SLEASE" >/dev/null
+DAY_FROM=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d yesterday +%Y-%m-%d); DAY_TO=$(date -u -v+1d +%Y-%m-%d 2>/dev/null || date -u -d tomorrow +%Y-%m-%d)
+ROWS=0; for _ in $(seq 1 12); do
+  ROWS=$(curl -sS -H "$MH" "$LITELLM_URL/spend/logs/v2?user_id=e2e-person&start_date=$DAY_FROM&end_date=$DAY_TO" | python3 -c 'import json,sys;print(len(json.load(sys.stdin).get("data",[])))')
+  [ "$ROWS" -ge 1 ] && break; sleep 5
+done
+[ "$ROWS" -ge 1 ] || fail "no spend log rows for the stamped user after the key was revoked"
+curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/new" -d '{"user_id":"e2e-person","user_role":"internal_user"}'
+REQS=0; for _ in $(seq 1 24); do
+  REQS=$(curl -sS -H "$MH" "$LITELLM_URL/user/daily/activity?user_id=e2e-person&start_date=$DAY_FROM&end_date=$DAY_TO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("metadata",{}).get("total_api_requests") or 0)')
+  [ "$REQS" -ge 1 ] && break; sleep 5
+done
+[ "$REQS" -ge 1 ] || fail "daily activity did not attach to the user record created after the fact"
+curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/delete" -d '{"user_ids":["e2e-person"]}'
+pass "attribution survived revocation and attached to a user record created afterwards"
 
 SALIAS="vault-e2e-static"
 ORIG=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
