@@ -92,16 +92,17 @@ func (c *client) regenerateKey(ctx context.Context, tokenID string) (*generatedK
 	return &out, nil
 }
 
-// keyInfo is the owner and alias of a key; 404 for the master key, which
-// LiteLLM does not store.
-type keyInfo struct {
+// keyOwner is the owner and alias of a key.
+type keyOwner struct {
 	UserID   string `json:"user_id"`
 	KeyAlias string `json:"key_alias"`
 }
 
-func (c *client) keyInfo(ctx context.Context, key string) (*keyInfo, error) {
+// keyInfo returns a 404 apiError for the master key, which LiteLLM does not
+// store.
+func (c *client) keyInfo(ctx context.Context, key string) (*keyOwner, error) {
 	var out struct {
-		Info keyInfo `json:"info"`
+		Info keyOwner `json:"info"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/key/info?key="+url.QueryEscape(key), nil, &out); err != nil {
 		return nil, err

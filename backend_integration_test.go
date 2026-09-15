@@ -190,7 +190,7 @@ func TestIntegration_RotateRoot(t *testing.T) {
 	if resp := writeConfig(t, b, s, map[string]any{"url": c.baseURL, "admin_key": admin.Key}); resp.IsError() {
 		t.Fatal(resp.Error())
 	}
-	resp, err := b.HandleRequest(ctx, &logical.Request{Operation: logical.UpdateOperation, Path: "rotate-root", Storage: s})
+	resp, err := handle(t, b, s, logical.UpdateOperation, "rotate-root", nil)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("rotate-root: resp %v err %v", resp, err)
 	}
@@ -201,11 +201,14 @@ func TestIntegration_RotateRoot(t *testing.T) {
 	if authStatus(t, c, admin.Key) != 401 || authStatus(t, c, cfg.AdminKey) != 200 {
 		t.Fatal("rotation did not swap which admin key authenticates")
 	}
-	if info, err := newClient(c.baseURL, cfg.AdminKey, c.http).keyInfo(ctx, cfg.AdminKey); err != nil || info.UserID != user {
+	rotated := newClient(c.baseURL, cfg.AdminKey, c.http)
+	if info, err := rotated.keyInfo(ctx, cfg.AdminKey); err != nil || info.UserID != user {
 		t.Fatalf("rotated key not under the same user: %v %v", info, err)
 	}
-	if _, err := newClient(c.baseURL, cfg.AdminKey, c.http).generateKey(ctx, map[string]any{"key_alias": user + "-probe", "duration": "1m"}); err != nil {
+	if _, err := rotated.generateKey(ctx, map[string]any{"key_alias": user + "-probe", "duration": "1m", "user_id": user}); err != nil {
 		t.Fatalf("rotated key cannot generate: %v", err)
 	}
-	t.Logf("path taken: %d warnings (0 = regenerate, 1 = successor)", len(resp.Warnings))
+	if resp != nil {
+		t.Logf("successor path taken: %d warnings", len(resp.Warnings))
+	}
 }

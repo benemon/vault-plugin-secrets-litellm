@@ -25,15 +25,10 @@ func setupAdminKey(t *testing.T) (*fakeLiteLLM, *backend, logical.Storage, strin
 	return f, b, s, k.Key
 }
 
-func rotateRoot(t *testing.T, b *backend, s logical.Storage) (*logical.Response, error) {
-	t.Helper()
-	return b.HandleRequest(context.Background(), &logical.Request{Operation: logical.UpdateOperation, Path: "rotate-root", Storage: s})
-}
-
 func TestRotateRoot_Regenerate(t *testing.T) {
 	f, b, s, old := setupAdminKey(t)
 	f.licensed = true
-	resp, err := rotateRoot(t, b, s)
+	resp, err := handle(t, b, s, logical.UpdateOperation, "rotate-root", nil)
 	if err != nil || (resp != nil && (resp.IsError() || len(resp.Warnings) != 0)) {
 		t.Fatalf("resp %v err %v", resp, err)
 	}
@@ -51,7 +46,7 @@ func TestRotateRoot_Regenerate(t *testing.T) {
 
 func TestRotateRoot_SuccessorOnCommunity(t *testing.T) {
 	f, b, s, old := setupAdminKey(t)
-	resp, err := rotateRoot(t, b, s)
+	resp, err := handle(t, b, s, logical.UpdateOperation, "rotate-root", nil)
 	if err != nil || resp == nil || resp.IsError() || len(resp.Warnings) != 1 || !strings.Contains(resp.Warnings[0], "successor") {
 		t.Fatalf("resp %v err %v", resp, err)
 	}
@@ -66,12 +61,12 @@ func TestRotateRoot_SuccessorOnCommunity(t *testing.T) {
 		}
 	}
 	if successor == nil || cfg.AdminKey != successor.Key || successor.Request["user_id"] != "vault-admin" || cfg.AdminKey == old {
-		t.Fatalf("successor not stored: cfg key %q", cfg.AdminKey[:6])
+		t.Fatalf("successor not stored: cfg key %q", cfg.AdminKey)
 	}
 	if c, _ := getClient(context.Background(), s); c.checkAdminKey(context.Background()) != nil {
 		t.Fatal("successor does not work")
 	}
-	if resp, _ := rotateRoot(t, b, s); resp.IsError() {
+	if resp, _ := handle(t, b, s, logical.UpdateOperation, "rotate-root", nil); resp.IsError() {
 		t.Fatalf("second rotation: %v", resp.Error())
 	}
 	if f.count() != 1 {
@@ -83,13 +78,13 @@ func TestRotateRoot_Refusals(t *testing.T) {
 	f := newFakeLiteLLM(t)
 	b, s := getBackend(t)
 	writeConfig(t, b, s, map[string]any{"url": f.URL, "admin_key": f.adminKey})
-	resp, err := rotateRoot(t, b, s)
+	resp, err := handle(t, b, s, logical.UpdateOperation, "rotate-root", nil)
 	if err != nil || !resp.IsError() || !strings.Contains(resp.Error().Error(), "master key") {
 		t.Fatalf("master key: resp %v err %v", resp, err)
 	}
 
 	b2, s2 := getBackend(t)
-	if _, err := rotateRoot(t, b2, s2); err == nil || !strings.Contains(err.Error(), "not configured") {
+	if _, err := handle(t, b2, s2, logical.UpdateOperation, "rotate-root", nil); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("unconfigured: %v", err)
 	}
 }
@@ -97,7 +92,7 @@ func TestRotateRoot_Refusals(t *testing.T) {
 func TestRotateRoot_FailsClosedWhenSuccessorUnusable(t *testing.T) {
 	f, b, s, old := setupAdminKey(t)
 	f.demoteNewKeys = true
-	_, err := rotateRoot(t, b, s)
+	_, err := handle(t, b, s, logical.UpdateOperation, "rotate-root", nil)
 	if err == nil || !strings.Contains(err.Error(), "config unchanged") {
 		t.Fatalf("want fail-closed error, got %v", err)
 	}

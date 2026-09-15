@@ -22,7 +22,8 @@ import (
 
 // fakeLiteLLM reproduces the /key/* behaviour and error envelopes observed on
 // litellm 1.93.0: plaintext only at generate and regenerate, unique aliases,
-// unit-suffixed durations, Enterprise gating of tags and regenerate.
+// unit-suffixed durations, Enterprise gating of tags and regenerate, and the
+// admin gate that a proxy_admin user's keys pass like the master key.
 type fakeLiteLLM struct {
 	*httptest.Server
 	adminKey string
@@ -48,7 +49,8 @@ type fakeKey struct {
 	Request map[string]any
 	// Duration is the last duration string applied by generate or update.
 	Duration string
-	Demoted  bool
+	// Demoted is demoteNewKeys as it stood when the key was generated.
+	Demoted bool
 }
 
 func newFakeLiteLLM(t *testing.T) *fakeLiteLLM {

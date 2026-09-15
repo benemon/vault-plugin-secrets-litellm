@@ -49,12 +49,14 @@ func (b *backend) pathRotateRootWrite(ctx context.Context, req *logical.Request,
 	if err != nil {
 		return nil, err
 	}
+	// LiteLLM's hash is sha256 of the plaintext (pinned by the integration
+	// suite) and /key/info by plaintext does not return it.
 	sum := sha256.Sum256([]byte(cfg.AdminKey))
 	oldHash := hex.EncodeToString(sum[:])
 
-	resp := &logical.Response{}
 	fallback := false
 	newKey, err := c.regenerateKey(ctx, oldHash)
+	// The licence gate is a 500 whose only distinguishing mark is the message.
 	if errors.As(err, &ae) && strings.Contains(ae.Message, "Enterprise") {
 		fallback = true
 		if info.UserID == "" {
@@ -83,16 +85,18 @@ func (b *backend) pathRotateRootWrite(ctx context.Context, req *logical.Request,
 	if err := req.Storage.Put(ctx, entry); err != nil {
 		return nil, err
 	}
-	if fallback {
-		err = successor.deleteKeyByHash(ctx, oldHash)
-		if errors.As(err, &ae) && ae.Status == 404 {
-			err = nil
-		}
-		if err != nil {
-			resp.AddWarning(fmt.Sprintf("successor admin key stored, but the previous key could not be deleted and is still valid: %s", err))
-		} else {
-			resp.AddWarning("LiteLLM refused regenerate; a successor admin key was generated and the previous key deleted.")
-		}
+	if !fallback {
+		return nil, nil
+	}
+	resp := &logical.Response{}
+	err = successor.deleteKeyByHash(ctx, oldHash)
+	if errors.As(err, &ae) && ae.Status == 404 {
+		err = nil
+	}
+	if err != nil {
+		resp.AddWarning(fmt.Sprintf("successor admin key stored, but the previous key could not be deleted and is still valid: %s", err))
+	} else {
+		resp.AddWarning("LiteLLM refused regenerate; a successor admin key was generated and the previous key deleted.")
 	}
 	return resp, nil
 }
