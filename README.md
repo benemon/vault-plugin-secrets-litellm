@@ -27,7 +27,7 @@ Register and enable the engine:
    build from source instead, run `make dev` and use `bin/vault-plugin-secrets-litellm`.
 
    Each release ships a `SHA256SUMS` file with a Sigstore Cosign bundle, a
-   CycloneDX SBOM per archive, and a GitHub build-provenance attestation:
+   SPDX SBOM per archive, and a GitHub build-provenance attestation:
 
    ```sh
    cosign verify-blob \
