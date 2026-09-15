@@ -26,13 +26,12 @@ Register and enable the engine:
    and copy `vault-plugin-secrets-litellm` into the plugin directory. To
    build from source instead, run `make dev` and use `bin/vault-plugin-secrets-litellm`.
 
-   Each release ships a `SHA256SUMS` file signed with Sigstore Cosign, a
+   Each release ships a `SHA256SUMS` file with a Sigstore Cosign bundle, a
    CycloneDX SBOM per archive, and a GitHub build-provenance attestation:
 
    ```sh
    cosign verify-blob \
-     --certificate vault-plugin-secrets-litellm_<version>_SHA256SUMS.pem \
-     --signature vault-plugin-secrets-litellm_<version>_SHA256SUMS.sig \
+     --bundle vault-plugin-secrets-litellm_<version>_SHA256SUMS.sigstore.json \
      --certificate-identity-regexp 'https://github.com/benemon/vault-plugin-secrets-litellm/' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      vault-plugin-secrets-litellm_<version>_SHA256SUMS
