@@ -1,4 +1,4 @@
-module github.com/benjaminholmes/vault-plugin-secrets-litellm
+module github.com/benemon/vault-plugin-secrets-litellm
 
 go 1.27.1
 

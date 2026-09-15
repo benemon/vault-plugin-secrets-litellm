@@ -1,6 +1,6 @@
 PLUGIN_NAME := vault-plugin-secrets-litellm
 VERSION ?= 0.1.0-dev
-LDFLAGS := -X github.com/benjaminholmes/vault-plugin-secrets-litellm.version=$(VERSION)
+LDFLAGS := -X github.com/benemon/vault-plugin-secrets-litellm.version=$(VERSION)
 
 .PHONY: default
 default: dev

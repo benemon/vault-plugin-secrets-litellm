@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	litellm "github.com/benjaminholmes/vault-plugin-secrets-litellm"
+	litellm "github.com/benemon/vault-plugin-secrets-litellm"
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/plugin"
