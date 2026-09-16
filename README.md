@@ -1,27 +1,27 @@
 # vault-plugin-secrets-litellm
 
-LiteLLM virtual keys are created by hand in the proxy, live until someone
-deletes them, and leave no record of who holds them. This Vault secrets
-engine issues them on demand instead. Each key is generated through LiteLLM's
-own key API, bound to a Vault lease, extended when the lease is renewed and
-deleted when the lease ends or is revoked. A static role binds one existing
-key by alias and serves the same key to every reader until an operator
-rotates it through Vault.
+A Vault secrets engine for LiteLLM virtual keys. Dynamic roles generate a
+key through LiteLLM's key API, bind it to a Vault lease, extend it when the
+lease is renewed and delete it when the lease ends or is revoked. Static
+roles bind one existing key by alias and serve the same key to every reader
+until an operator rotates it through Vault.
 
 ## Setup
 
 Prerequisites:
 
-- Vault 1.12 or later with a configured `plugin_directory`.
+- Vault with plugin multiplexing, which every supported release has, and a
+  configured `plugin_directory`. Releases are built for the platforms Vault
+  2.0 ships for: linux 386, amd64 and arm64, darwin amd64 and arm64, freebsd
+  386 and amd64, windows 386 and amd64.
 - `VAULT_ADDR` and a token able to register plugins and enable secrets
   engines.
 - A LiteLLM proxy backed by a database, with its URL in `LITELLM_URL` and
-  its master key in `LITELLM_MASTER_KEY` for the preparation step.
+  its master key in `LITELLM_MASTER_KEY` for step 1.
 
-Prepare LiteLLM:
-
-1. Create the plugin's admin identity: a user with the `proxy_admin` role
-   and a virtual key under it. The key is the plugin's `admin_key`.
+1. Create the plugin's admin identity in LiteLLM: a user with the
+   `proxy_admin` role and a virtual key under it. The key is the plugin's
+   `admin_key`.
 
    ```sh
    curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
@@ -36,10 +36,9 @@ Prepare LiteLLM:
    [virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys) and
    [user roles](https://docs.litellm.ai/docs/proxy/access_control).
 
-Register and enable the engine:
-
-2. Download the archive for the Vault server's platform from the
+2. Download the zip for the Vault server's platform from the
    [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases),
+   verify it as described under [Verifying a release](#verifying-a-release),
    extract `vault-plugin-secrets-litellm`, and place it in the plugin
    directory owned by the user Vault runs as and executable by it:
 
@@ -50,32 +49,19 @@ Register and enable the engine:
    To build from source instead, run `make dev` and install
    `bin/vault-plugin-secrets-litellm` the same way.
 
-   Each release ships a `SHA256SUMS` file with a Sigstore Cosign bundle, a
-   SPDX SBOM per archive, and a GitHub build-provenance attestation:
-
-   ```sh
-   cosign verify-blob \
-     --bundle vault-plugin-secrets-litellm_<version>_SHA256SUMS.sigstore.json \
-     --certificate-identity-regexp 'https://github.com/benemon/vault-plugin-secrets-litellm/' \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     vault-plugin-secrets-litellm_<version>_SHA256SUMS
-   gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.zip \
-     --repo benemon/vault-plugin-secrets-litellm
-   ```
-
-3. Register it under the catalog name `litellm`, passing the checksum of the
-   installed binary and the release version. The released `SHA256SUMS` file
-   verifies the downloaded archive; Vault needs the checksum of the extracted
-   binary it will execute, which is not in that file, so compute it on the
-   installed file. The catalog name becomes the engine type and the prefix of
-   the mount accessor. On Vault Enterprise the plugin catalog belongs to the
-   root namespace, so run this with a root-namespace token even when the
-   engine will be mounted in a child namespace.
+3. Register it under the catalog name `litellm`. The catalog name becomes
+   the engine type and the prefix of the mount accessor. Vault needs the
+   checksum of the binary it will execute, so compute it on the installed
+   file rather than taking a value from the release's checksum file, which
+   covers the zips. `-version` is optional and lets several releases coexist
+   in the catalog. On Vault Enterprise the plugin catalog belongs to the root
+   namespace, so run this with a root-namespace token even when the engine
+   will be mounted in a child namespace.
 
    ```sh
    vault plugin register \
      -sha256="$(sha256sum /etc/vault.d/plugins/vault-plugin-secrets-litellm | cut -d' ' -f1)" \
-     -version=v0.1.0 \
+     -version=<version> \
      -command=vault-plugin-secrets-litellm secret litellm
    ```
 
@@ -87,7 +73,23 @@ Register and enable the engine:
 
 The Vault documentation on
 [plugin management](https://developer.hashicorp.com/vault/docs/plugins/plugin-management)
-covers directories, checksums and upgrades.
+covers directories, checksums, multiplexing and upgrades.
+
+### Verifying a release
+
+Each release ships a `SHA256SUMS` file over the zips with a Sigstore Cosign
+bundle, an SPDX SBOM per zip, and a GitHub build-provenance attestation over
+the zips and the checksum file.
+
+```sh
+cosign verify-blob \
+  --bundle vault-plugin-secrets-litellm_<version>_SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp 'https://github.com/benemon/vault-plugin-secrets-litellm/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  vault-plugin-secrets-litellm_<version>_SHA256SUMS
+gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.zip \
+  --repo benemon/vault-plugin-secrets-litellm
+```
 
 ## Usage
 
@@ -102,25 +104,8 @@ vault write litellm/config \
 The write calls LiteLLM's `GET /key/list` with the supplied key and is
 refused if LiteLLM rejects it. Writing again with a subset of parameters
 keeps the others. `vault read litellm/config` returns `url`, `ca_cert` and
-`insecure_tls`. `vault delete litellm/config` removes the configuration, after
-which role and key operations fail until it is written again.
-
-### Rotate the admin key
-
-```sh
-vault write -f litellm/rotate-root
-```
-
-On a LiteLLM Enterprise instance the admin key is regenerated in place and
-the previous value stops working at once. On a community instance the plugin
-generates a successor key under the same LiteLLM user, verifies it, stores
-it, and then deletes the previous key, returning a warning that says so. If
-that deletion fails the warning says the previous key is still valid. The
-configuration is rewritten only after the new key has been verified.
-
-Rotation is refused when the configured key is the master key, which LiteLLM
-cannot rotate, and when the key belongs to no LiteLLM user, since a successor
-needs an owner.
+`insecure_tls`. `vault delete litellm/config` removes the configuration,
+after which role and key operations fail until it is written again.
 
 ### Define a role
 
@@ -144,24 +129,19 @@ The plugin rejects a `key_request` that is not a JSON object, one whose
 `duration`, which Vault fills in itself. It also rejects a `ttl` above
 `max_ttl` and a malformed `user_id_template` or `team_id_template`.
 Everything else in `key_request` is passed to LiteLLM as given and validated
-there.
+there. Fields that need a LiteLLM Enterprise licence, such as `tags` and
+`guardrails`, are refused by a community instance with its licence error,
+which is returned to the caller.
 
-To attribute each key to the caller, set identity templates on the role:
+To attribute each key to the caller, set identity templates on the role.
+[Attribution](#attribution) describes how they resolve and when a read is
+refused.
 
 ```sh
 vault write litellm/roles/app key_request=@app.json \
   user_id_template='{{identity.entity.aliases.auth_oidc_5b7c1e2a.name}}' \
   team_id_template='{{identity.groups.names.project-x.metadata.litellm_team_id}}'
 ```
-
-A role with a template refuses reads from tokens without an entity, such as
-the root token. See [Attribution](#attribution).
-On a community instance LiteLLM answers `403` for fields that need an
-Enterprise licence, such as `tags` and `guardrails`, and that error is returned
-to the caller.
-
-Roles are read with `vault read litellm/roles/app`, listed with
-`vault list litellm/roles` and removed with `vault delete litellm/roles/app`.
 
 ### Generate a key
 
@@ -200,11 +180,8 @@ WARNING! The following warnings were returned from Vault:
 ```
 
 The alias must name an existing LiteLLM key that no other static role binds.
-The write regenerates the key, so any consumer holding the previous value
-loses access at that moment. `vault read litellm/static-roles/svc` returns
-`key_alias` and `token_id`. `vault list litellm/static-roles` lists the
-roles. `vault delete litellm/static-roles/svc` removes Vault's copy and
-leaves the key in LiteLLM.
+`vault read litellm/static-roles/svc` returns `key_alias` and `token_id`.
+Deleting the role removes Vault's copy and leaves the key in LiteLLM.
 
 ### Read a static key
 
@@ -220,7 +197,8 @@ key_alias    team-blue
 token_id     4c1f0e2a...
 ```
 
-There is no lease. Every read returns the same key until the role is rotated.
+There is no lease. Reads return the stored key while it still exists in
+LiteLLM. [Key custody](#key-custody) covers what happens when it does not.
 
 ### Rotate a static key
 
@@ -228,8 +206,18 @@ There is no lease. Every read returns the same key until the role is rotated.
 vault write -f litellm/rotate-role/svc
 ```
 
-The key is regenerated and the previous value stops working. The same
-warning as on bind is returned.
+The same warning as on bind is returned.
+
+### Rotate the admin key
+
+```sh
+vault write -f litellm/rotate-root
+```
+
+On a LiteLLM Enterprise instance the admin key is regenerated in place. On a
+community instance a successor key is generated under the same LiteLLM user
+and the previous key is deleted, with a warning that says so.
+[Key custody](#key-custody) covers the guarantees and refusals.
 
 ## Lease behaviour
 
@@ -242,10 +230,8 @@ Each read of `creds/<role>` sends the role's `key_request` to
   the lease end on its own, so an unreachable Vault cannot leave a working key
   behind.
 - `metadata` from the role merged with `vault_role`, `vault_request_id` and
-  `vault_mount_path`. A key or spend-log row in LiteLLM can be traced to the
-  Vault audit entry that issued it.
-- `user_id` and `team_id` when the role sets a template for them. See
-  [Attribution](#attribution).
+  `vault_mount_path`.
+- `user_id` and `team_id` when the role sets a template for them.
 
 Renewing the lease calls `POST /key/update` with a new `duration`. The plugin
 computes it from the same inputs Vault core uses, so LiteLLM's expiry lands on
@@ -287,9 +273,8 @@ empty string. The errors read `user_id_template is set but the caller's
 token has no entity`, `user_id_template "…" did not resolve for this caller:
 …` and `user_id_template "…" resolved to an empty value for this caller`,
 with `team_id_template` in the same forms. A non-empty `user_id` or
-`team_id` in `key_request` is used as-is and skips the template, which is
-how a service role keeps a fixed identity. Templates are validated when the
-role is written.
+`team_id` in `key_request` is used as-is and skips the template. Templates
+are validated when the role is written.
 
 The plugin never creates LiteLLM users or teams. A stamped `user_id` needs
 no user record for LiteLLM's analytics endpoints, and a record created later
@@ -297,34 +282,42 @@ with `POST /user/new` attaches everything logged under that id. The LiteLLM
 UI lists only users with a record. Whatever a template resolves to is
 visible to LiteLLM administrators on every key and log row.
 
-## Static key custody
+## Key custody
 
 > [!IMPORTANT]
-> Everything in this section depends on `/key/regenerate`, a LiteLLM
-> Enterprise endpoint.
+> Static roles depend on `/key/regenerate`, a LiteLLM Enterprise endpoint.
+> Admin key rotation uses it where available and has a community path.
 
 LiteLLM returns a key's plaintext once, from `/key/generate` or
 `/key/{token_id}/regenerate`, and stores only the hash. A static role
 therefore takes ownership of its key by calling regenerate at bind, and Vault
-keeps the returned plaintext in the role's storage entry. That entry sits
-under the `static-roles/` prefix, which the plugin registers for seal
-wrapping along with the `config` entry that holds the admin key. Reads serve the stored copy without regenerating.
+keeps the returned plaintext in the role's storage entry. The `static-roles/`
+prefix and the `config` entry that holds the admin key are registered for
+seal wrapping. Reads serve the stored copy without regenerating.
 
-The plugin verifies the alias exists and refuses a bind when `key_alias` is
-missing, when the alias names no LiteLLM key, when another static role
-already binds the alias, or when the role already exists. A bound role cannot
-be rewritten. Delete it and bind again.
+A bind is refused when `key_alias` is missing, when the alias names no
+LiteLLM key, when another static role already binds the alias, or when the
+role already exists. A bound role cannot be rewritten. Delete it and bind
+again.
 
-LiteLLM stays the authority on the key's existence and settings. Before
-serving a read, the plugin checks that the stored hash still names a key. If
-the key was regenerated or deleted outside Vault, the read fails and names
-`rotate-role/<name>` as the recovery. Rotation looks the key up by alias and
-regenerates, so it recovers from an outside regeneration. It refuses when
-the role does not exist or when no key carries the alias any more.
+Before serving a read, the plugin checks that the stored hash still names a
+key. If the key was regenerated or deleted outside Vault, the read fails and
+names `rotate-role/<name>` as the recovery. Rotation looks the key up by
+alias and regenerates, so it recovers from an outside regeneration. It
+refuses when the role does not exist or when no key carries the alias any
+more. Regenerate changes the hash and keeps the alias and the key's settings,
+as the [virtual keys documentation](https://docs.litellm.ai/docs/proxy/virtual_keys)
+describes. The previous value stops working when the call returns.
 
-Regenerate keeps the alias, limits, budget, spend and expiry and changes the
-hash. There is no overlap window. The previous value stops working when the
-regenerate call returns.
+`rotate-root` regenerates the admin key in place when LiteLLM allows it. When
+LiteLLM answers with its licence error, the plugin generates a successor key
+under the admin key's LiteLLM user, verifies it with `GET /key/list`, stores
+it, and then deletes the previous key by hash. The configuration is rewritten
+only after the successor has been verified. If the deletion fails, the
+warning says the previous key is still valid. Rotation is refused when the
+configured key is the master key, which LiteLLM cannot rotate. On the
+successor path it is also refused when the admin key belongs to no LiteLLM
+user.
 
 ## API
 
@@ -367,7 +360,8 @@ regenerate call returns.
 
 `admin_key` and the returned `key` are marked sensitive in the path schemas.
 Errors from LiteLLM are returned with their HTTP status and the message from
-LiteLLM's error envelope, truncated to 200 bytes.
+LiteLLM's error envelope in full. A body that is not LiteLLM's envelope is
+returned as text cut at 200 bytes.
 
 ## Limits
 
@@ -387,24 +381,41 @@ LiteLLM's error envelope, truncated to 200 bytes.
 
 ## Development
 
+Go 1.27 or later.
+
 ```sh
-make test          # unit tests against an in-process fake LiteLLM
+make dev           # build bin/vault-plugin-secrets-litellm
+make test          # gofmt check, go vet, unit tests against an in-process fake LiteLLM
 make integration   # tagged tests against a live instance
 make e2e           # full lifecycle through a Vault dev server and a live instance
 make run           # dev server with the plugin registered and mounted at litellm/
-make snapshot      # cross-build every release target into dist/
+make snapshot      # cross-build every release target into dist/, unsigned, no SBOMs
+make fmt           # gofmt in place
 ```
 
-Releases are cut by pushing a `v*` tag that points at a commit on `main`.
-The release workflow refuses any other tag.
+`make test` and `make integration` fail on unformatted files. `make snapshot`
+downloads GoReleaser on first use.
 
 `make integration` and `make e2e` need `LITELLM_URL` and
-`LITELLM_MASTER_KEY`. Both create a `proxy_admin` user and key with the
-master key, configure the plugin with that key, and rotate it. `make e2e` detects whether the instance is licensed and asserts the
-matching behaviour. On Enterprise that is static binds and in-place admin
-key regeneration. On community it is the licence refusal for binds and the
-successor path for `rotate-root`. The integration test skips the static-role test on a
-community instance. `make run` and `make e2e` start `vault server -dev` from
-`VAULT_BIN`, defaulting to the `vault` on your path. On macOS keep the plugin
-directory outside `/tmp`. Vault rejects it because `/tmp` resolves to
-`/private/tmp`.
+`LITELLM_MASTER_KEY`. The integration tests configure the plugin with the
+master key, except the rotation test, which creates a `proxy_admin` user and
+key for itself. `make e2e` creates a `proxy_admin` user and key with the
+master key, configures the plugin with that key, rotates it, and detects
+whether the instance is licensed to assert the matching behaviour. On
+Enterprise that is static binds and in-place admin key regeneration. On
+community it is the licence refusal for binds and the successor path for
+`rotate-root`. The integration test skips the static-role test on a
+community instance.
+
+`make run` and `make e2e` start `vault server -dev` from `VAULT_BIN`,
+defaulting to the `vault` on your path. On macOS keep the plugin directory
+outside `/tmp`. Vault rejects it because `/tmp` resolves to `/private/tmp`.
+
+## Contributing
+
+Changes go through pull requests against `main`, which requires the `test`
+and `snapshot` checks: gofmt, vet and unit tests, then a GoReleaser snapshot
+build of every release target. Releases are cut by pushing a `v*` tag that
+points at a commit on `main`. The release workflow runs only for `v*` tags
+and refuses one whose commit is not on `main`. Release notes are generated
+from commit subjects, excluding those prefixed `chore`.

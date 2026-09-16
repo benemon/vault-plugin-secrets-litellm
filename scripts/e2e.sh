@@ -27,7 +27,7 @@ go build -o "$SCRATCH/plugins/$PLUGIN_NAME" "$DIR/cmd/$PLUGIN_NAME"
   -dev-plugin-dir="$SCRATCH/plugins" -log-level=warn >"$SCRATCH/vault.log" 2>&1 &
 VAULT_PID=$!
 cleanup() {
-  kill -INT "$VAULT_PID" 2>/dev/null; wait "$VAULT_PID" 2>/dev/null || true
+  kill -INT "$VAULT_PID" 2>/dev/null || true; wait "$VAULT_PID" 2>/dev/null || true
   remove_admin_identity
   curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/delete" -d '{"user_ids":["e2e-person"]}'
   rm -rf "$SCRATCH"
