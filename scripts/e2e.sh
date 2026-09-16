@@ -47,7 +47,7 @@ SHASUM=$(shasum -a 256 "$SCRATCH/plugins/$PLUGIN_NAME" | cut -d' ' -f1)
 
 # Mirrors the README install path: the plugin holds a proxy_admin virtual key.
 curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/new" \
-  -d "{\"user_id\":\"$ADMIN_USER\",\"user_role\":\"proxy_admin\"}" >/dev/null
+  -d "{\"user_id\":\"$ADMIN_USER\",\"user_role\":\"proxy_admin\",\"auto_create_key\":false}" >/dev/null
 ADMIN_KEY=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" \
   -d "{\"user_id\":\"$ADMIN_USER\",\"key_alias\":\"$ADMIN_USER-key\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"])')
 "$V" write litellm/config url="$LITELLM_URL" admin_key="$ADMIN_KEY" >/dev/null
@@ -141,7 +141,7 @@ ROWS=0; for _ in $(seq 1 12); do
   [ "$ROWS" -ge 1 ] && break; sleep 5
 done
 [ "$ROWS" -ge 1 ] || fail "no spend log rows for the stamped user after the key was revoked"
-curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/new" -d '{"user_id":"e2e-person","user_role":"internal_user"}'
+curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/user/new" -d '{"user_id":"e2e-person","user_role":"internal_user","auto_create_key":false}'
 REQS=0; for _ in $(seq 1 24); do
   REQS=$(curl -sS -H "$MH" "$LITELLM_URL/user/daily/activity?user_id=e2e-person&start_date=$DAY_FROM&end_date=$DAY_TO" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("metadata",{}).get("total_api_requests") or 0)')
   [ "$REQS" -ge 1 ] && break; sleep 5
