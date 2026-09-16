@@ -3,7 +3,6 @@ project_name: vault-plugin-secrets-litellm
 
 builds:
   - main: ./cmd/vault-plugin-secrets-litellm
-    binary: vault-plugin-secrets-litellm
     env:
       - CGO_ENABLED=0
     flags:
@@ -52,9 +51,3 @@ changelog:
   filters:
     exclude:
       - "^chore"
-
-release:
-  prerelease: auto
-
-snapshot:
-  version_template: "{{ incpatch .Version }}-next"

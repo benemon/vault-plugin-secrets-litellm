@@ -18,13 +18,12 @@ jobs:
         with:
           fetch-depth: 0
       - name: Require the tag to be on main
-        run: |
-          git fetch origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: anchore/sbom-action/download-syft@v0
+      # cosign-installer publishes no floating major tag.
       - uses: sigstore/cosign-installer@v4.1.2
       - uses: goreleaser/goreleaser-action@v7
         with:

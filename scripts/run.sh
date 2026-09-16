@@ -30,8 +30,7 @@ VAULT_PID=$!
 
 cleanup() {
   echo "==> Cleaning up"
-  kill -INT "$VAULT_PID"
-  wait "$VAULT_PID"
+  kill -INT "$VAULT_PID" 2>/dev/null || true; wait "$VAULT_PID" 2>/dev/null || true
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT

@@ -1,13 +1,11 @@
 PLUGIN_NAME := vault-plugin-secrets-litellm
-VERSION ?= 0.1.0-dev
-LDFLAGS := -X github.com/benemon/vault-plugin-secrets-litellm.version=$(VERSION)
 
 .PHONY: default
 default: dev
 
 .PHONY: dev
 dev:
-	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(PLUGIN_NAME) ./cmd/$(PLUGIN_NAME)
+	CGO_ENABLED=0 go build -o bin/$(PLUGIN_NAME) ./cmd/$(PLUGIN_NAME)
 
 .PHONY: run
 run:
@@ -15,6 +13,7 @@ run:
 
 .PHONY: test
 test: fmtcheck
+	go vet ./...
 	CGO_ENABLED=0 go test ./... $(TESTARGS) -timeout=20m
 
 # Exercises the real LiteLLM instance named by LITELLM_URL / LITELLM_MASTER_KEY.
@@ -30,13 +29,11 @@ fmtcheck:
 fmt:
 	gofmt -l -w .
 
-# Full lifecycle through a Vault dev server against the LiteLLM named by
-# LITELLM_URL / LITELLM_MASTER_KEY.
+# Needs LITELLM_URL and LITELLM_MASTER_KEY.
 .PHONY: e2e
 e2e:
 	@sh -c "'$(CURDIR)/scripts/e2e.sh'"
 
-# Cross-builds every release target into dist/ without publishing.
 .PHONY: snapshot
 snapshot:
-	go run github.com/goreleaser/goreleaser/v2@v2.18.1 release --snapshot --clean --skip=sign,sbom
+	go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=sign,sbom
