@@ -166,7 +166,7 @@ func TestIntegration_RotateRoot(t *testing.T) {
 	c := integrationClient(t)
 	ctx := context.Background()
 	user := "vault-it-admin-" + time.Now().UTC().Format("150405")
-	if err := c.do(ctx, http.MethodPost, "/user/new", map[string]any{"user_id": user, "user_role": "proxy_admin"}, nil); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/user/new", map[string]any{"user_id": user, "user_role": "proxy_admin", "auto_create_key": false}, nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.do(ctx, http.MethodPost, "/user/delete", map[string]any{"user_ids": []string{user}}, nil) })

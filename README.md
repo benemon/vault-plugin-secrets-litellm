@@ -21,12 +21,13 @@ Prerequisites:
 
 1. Create the plugin's admin identity in LiteLLM: a user with the
    `proxy_admin` role and a virtual key under it. The key is the plugin's
-   `admin_key`.
+   `admin_key`. `auto_create_key` must be false, because LiteLLM otherwise
+   mints a second, unnamed key for the new user.
 
    ```sh
    curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
      -X POST "$LITELLM_URL/user/new" \
-     -d '{"user_id":"vault-plugin","user_role":"proxy_admin"}'
+     -d '{"user_id":"vault-plugin","user_role":"proxy_admin","auto_create_key":false}'
    curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
      -X POST "$LITELLM_URL/key/generate" \
      -d '{"user_id":"vault-plugin","key_alias":"vault-plugin-admin"}'
