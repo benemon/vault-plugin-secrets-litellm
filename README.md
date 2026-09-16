@@ -1,4 +1,4 @@
-[![ci](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/ci.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/ci.yml) [![Dependabot Updates](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/dependabot/dependabot-updates) [![release](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/release.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/release.yml)
+[![ci](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/ci.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/ci.yml) [![Dependabot Updates](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/dependabot/dependabot-updates) [![release](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/release.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/release.yml) [![codeql](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/codeql.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/codeql.yml) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/benemon/vault-plugin-secrets-litellm/badge)](https://scorecard.dev/viewer/?uri=github.com/benemon/vault-plugin-secrets-litellm)
 
 # vault-plugin-secrets-litellm
 
@@ -418,7 +418,8 @@ outside `/tmp`. Vault rejects it because `/tmp` resolves to `/private/tmp`.
 
 Changes go through pull requests against `main`, which requires the `test`
 and `snapshot` checks: gofmt, vet and unit tests, then a GoReleaser snapshot
-build of every release target. Releases are cut by pushing a `v*` tag that
+build of every release target. CodeQL scans pull requests and `main`, and
+OpenSSF Scorecard scores `main` weekly; both report to the Security tab. Releases are cut by pushing a `v*` tag that
 points at a commit on `main`. The release workflow runs only for `v*` tags
 and refuses one whose commit is not on `main`. Release notes are generated
 from commit subjects, excluding those prefixed `chore`.
