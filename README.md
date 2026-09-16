@@ -142,7 +142,20 @@ vault write litellm/roles/app ttl=1h max_ttl=24h key_request=@app.json
 The plugin rejects a `key_request` that is not a JSON object, one whose
 `metadata` is not an object, and one that sets `key`, `key_alias` or
 `duration`, which Vault fills in itself. It also rejects a `ttl` above
-`max_ttl`. Everything else is passed to LiteLLM as given and validated there.
+`max_ttl` and a malformed `user_id_template` or `team_id_template`.
+Everything else in `key_request` is passed to LiteLLM as given and validated
+there.
+
+To attribute each key to the caller, set identity templates on the role:
+
+```sh
+vault write litellm/roles/app key_request=@app.json \
+  user_id_template='{{identity.entity.aliases.auth_oidc_5b7c1e2a.name}}' \
+  team_id_template='{{identity.groups.names.project-x.metadata.litellm_team_id}}'
+```
+
+A role with a template refuses reads from tokens without an entity, such as
+the root token. See [Attribution](#attribution).
 On a community instance LiteLLM answers `403` for fields that need an
 Enterprise licence, such as `tags` and `guardrails`, and that error is returned
 to the caller.
@@ -221,7 +234,7 @@ warning as on bind is returned.
 ## Lease behaviour
 
 Each read of `creds/<role>` sends the role's `key_request` to
-`POST /key/generate` with three additions:
+`POST /key/generate` with these additions:
 
 - `key_alias` of the form `vault-<role>-<random>`. LiteLLM requires aliases
   to be unique, and the alias is what the plugin later deletes by.
@@ -231,6 +244,8 @@ Each read of `creds/<role>` sends the role's `key_request` to
 - `metadata` from the role merged with `vault_role`, `vault_request_id` and
   `vault_mount_path`. A key or spend-log row in LiteLLM can be traced to the
   Vault audit entry that issued it.
+- `user_id` and `team_id` when the role sets a template for them. See
+  [Attribution](#attribution).
 
 Renewing the lease calls `POST /key/update` with a new `duration`. The plugin
 computes it from the same inputs Vault core uses, so LiteLLM's expiry lands on
@@ -248,6 +263,39 @@ and `token_id` in the lease and never the key itself. The key appears in the
 
 The [LiteLLM virtual keys documentation](https://docs.litellm.ai/docs/proxy/virtual_keys)
 describes the key API, alias rules and the Enterprise-only endpoints.
+
+## Attribution
+
+LiteLLM records a key's `user_id` and `team_id` on every request row and in
+its daily aggregates, and keeps them after the key is deleted. Its
+[cost tracking documentation](https://docs.litellm.ai/docs/proxy/cost_tracking)
+covers those endpoints. A role can set both from the Vault caller's identity
+with [identity templates](https://developer.hashicorp.com/vault/docs/concepts/policies#templated-policies),
+the syntax Vault policies use.
+
+`{{identity.entity.aliases.<accessor>.name}}` resolves to the caller's alias
+name on that auth mount, the subject or email the IdP supplied, which is
+also what LiteLLM's [SSO login](https://docs.litellm.ai/docs/proxy/ui)
+assigns as `user_id`. `{{identity.groups.names.<group>.metadata.<key>}}`
+reads a LiteLLM team id from the metadata of a Vault group. A key may carry
+both.
+
+Resolution is strict. When a template is set, the read fails and no key is
+issued if the caller's token has no entity, if the entity lacks the alias,
+group or metadata the template names, or if the template resolves to an
+empty string. The errors read `user_id_template is set but the caller's
+token has no entity`, `user_id_template "…" did not resolve for this caller:
+…` and `user_id_template "…" resolved to an empty value for this caller`,
+with `team_id_template` in the same forms. A non-empty `user_id` or
+`team_id` in `key_request` is used as-is and skips the template, which is
+how a service role keeps a fixed identity. Templates are validated when the
+role is written.
+
+The plugin never creates LiteLLM users or teams. A stamped `user_id` needs
+no user record for LiteLLM's analytics endpoints, and a record created later
+with `POST /user/new` attaches everything logged under that id. The LiteLLM
+UI lists only users with a record. Whatever a template resolves to is
+visible to LiteLLM administrators on every key and log row.
 
 ## Static key custody
 
@@ -308,6 +356,8 @@ regenerate call returns.
 | `ttl` | Default lease duration. Defaults to the mount's default lease TTL. |
 | `max_ttl` | Maximum lease duration. Defaults to the mount's maximum lease TTL. |
 | `key_request` | JSON object sent to `POST /key/generate`. `key`, `key_alias` and `duration` are reserved. |
+| `user_id_template` | Identity template resolved against the caller and sent as `user_id`. |
+| `team_id_template` | Identity template resolved against the caller and sent as `team_id`. |
 
 ### static-roles/<name>
 
@@ -325,6 +375,9 @@ LiteLLM's error envelope, truncated to 200 bytes.
   [Bind a static role](#bind-a-static-role).
 - Rotation of static keys and of the admin key is on demand only. There is
   no `rotation_period`.
+- A role with an identity template cannot issue keys to tokens without an
+  entity, such as the root token. Automation without an entity uses a role
+  that sets `user_id` or `team_id` in `key_request` instead.
 - The Vault UI has no screens for external secrets engines. The mount is
   listed with Configure, which is mount tuning, and Delete. The browser CLI
   and the Leases view work with the engine. The API explorer lists the
@@ -347,9 +400,11 @@ The release workflow refuses any other tag.
 
 `make integration` and `make e2e` need `LITELLM_URL` and
 `LITELLM_MASTER_KEY`. Both create a `proxy_admin` user and key with the
-master key, configure the plugin with that key, and rotate it. The
-static-role steps need a licensed instance. The integration test skips them
-on a community instance and `make e2e` fails. `make run` and `make e2e` start `vault server -dev` from
+master key, configure the plugin with that key, and rotate it. `make e2e` detects whether the instance is licensed and asserts the
+matching behaviour. On Enterprise that is static binds and in-place admin
+key regeneration. On community it is the licence refusal for binds and the
+successor path for `rotate-root`. The integration test skips the static-role test on a
+community instance. `make run` and `make e2e` start `vault server -dev` from
 `VAULT_BIN`, defaulting to the `vault` on your path. On macOS keep the plugin
 directory outside `/tmp`. Vault rejects it because `/tmp` resolves to
 `/private/tmp`.

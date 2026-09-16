@@ -20,7 +20,7 @@ test: fmtcheck
 # Exercises the real LiteLLM instance named by LITELLM_URL / LITELLM_MASTER_KEY.
 .PHONY: integration
 integration: fmtcheck
-	CGO_ENABLED=0 go test -tags integration ./... -run Integration $(TESTARGS) -timeout=20m
+	CGO_ENABLED=0 go test -count=1 -tags integration ./... -run Integration $(TESTARGS) -timeout=20m
 
 .PHONY: fmtcheck
 fmtcheck:
