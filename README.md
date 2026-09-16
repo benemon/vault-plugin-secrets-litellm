@@ -1,3 +1,5 @@
+[![ci](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/ci.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/ci.yml) [![Dependabot Updates](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/dependabot/dependabot-updates) [![release](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/release.yml/badge.svg)](https://github.com/benemon/vault-plugin-secrets-litellm/actions/workflows/release.yml)
+
 # vault-plugin-secrets-litellm
 
 A Vault secrets engine for LiteLLM virtual keys. Dynamic roles generate a
