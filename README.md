@@ -42,14 +42,19 @@ Prerequisites:
 2. Download the zip for the Vault server's platform from the
    [releases page](https://github.com/benemon/vault-plugin-secrets-litellm/releases),
    verify it as described under [Verifying a release](#verifying-a-release),
-   extract `vault-plugin-secrets-litellm`, and place it in the plugin
-   directory owned by the user Vault runs as and executable by it:
+   extract `vault-plugin-secrets-litellm`, and copy it into the
+   [plugin directory](https://developer.hashicorp.com/vault/docs/configuration#plugin_directory)
+   on every Vault node:
 
    ```sh
-   install -o vault -g vault -m 0755 vault-plugin-secrets-litellm /etc/vault.d/plugins/
+   cp vault-plugin-secrets-litellm /etc/vault.d/plugins/
    ```
 
-   To build from source instead, run `make dev` and install
+   Vault must be able to read and execute the file. If the server runs
+   with `VAULT_ENABLE_FILE_PERMISSIONS_CHECK`, see
+   [plugin_file_permissions](https://developer.hashicorp.com/vault/docs/configuration#plugin_file_permissions).
+
+   To build from source instead, run `make dev` and copy
    `bin/vault-plugin-secrets-litellm` the same way.
 
 3. Register it under the catalog name `litellm`. The catalog name becomes
