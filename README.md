@@ -51,9 +51,8 @@ Prerequisites:
    ```
 
    Vault must be able to read and execute the file. If the server runs
-   with `VAULT_ENABLE_FILE_PERMISSIONS_CHECK`, the directory and binary
-   must also be owned by the user Vault runs as, with no group or other
-   write or execute bits unless `plugin_file_permissions` allows them.
+   with `VAULT_ENABLE_FILE_PERMISSIONS_CHECK`, see
+   [plugin_file_permissions](https://developer.hashicorp.com/vault/docs/configuration#plugin_file_permissions).
 
    To build from source instead, run `make dev` and copy
    `bin/vault-plugin-secrets-litellm` the same way.
