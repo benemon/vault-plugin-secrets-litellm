@@ -421,10 +421,12 @@ outside `/tmp`. Vault rejects it because `/tmp` resolves to `/private/tmp`.
 
 ## Contributing
 
-Changes go through pull requests against `main`, which requires the `test`
-and `snapshot` checks: gofmt, vet and unit tests, then a GoReleaser snapshot
-build of every release target. CodeQL scans pull requests and `main`, and
-OpenSSF Scorecard scores `main` weekly; both report to the Security tab. Releases are cut by pushing a `v*` tag that
-points at a commit on `main`. The release workflow runs only for `v*` tags
-and refuses one whose commit is not on `main`. Release notes are generated
-from commit subjects, excluding those prefixed `chore`.
+Changes go through pull requests against `main`, which requires the `test`,
+`vulncheck`, `snapshot` and `analyze` checks: gofmt, vet and unit tests;
+govulncheck; a GoReleaser snapshot build of every release target; and
+CodeQL. CodeQL runs on pull requests, on pushes to `main` and weekly.
+OpenSSF Scorecard scores `main` on every push and weekly. Both report to
+the Security tab. Releases are cut by pushing a `v*` tag that points at a
+commit on `main`. The release workflow runs only for `v*` tags and refuses
+one whose commit is not on `main`. Release notes are generated from commit
+subjects, excluding those prefixed `chore`.
