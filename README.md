@@ -141,52 +141,10 @@ there. Fields that need a LiteLLM Enterprise licence, such as `tags` and
 `guardrails`, are refused by a community instance with its licence error,
 which is returned to the caller.
 
-### Set the key's user and team
-
-`user_id` and `team_id` are ordinary `POST /key/generate` fields. LiteLLM
-records them on every request the key makes and applies the
-[team's](https://docs.litellm.ai/docs/proxy/team_budgets) models and budget
-to the key. A role can fix them, take them from the Vault caller's identity,
-or mix the two.
-
-**Fixed.** Put the values in `key_request`. Every key from the role belongs
-to that user and team, which suits a service whose keys should all be
-accounted together.
-
-```json
-{
-  "models": ["qwen-a3b"],
-  "user_id": "billing-service",
-  "team_id": "9c1d2e3f-team-blue"
-}
-```
-
-**From the caller.** Set `user_id_template` or `team_id_template` on the
-role instead. Each key carries the identity of the Vault token that read it,
-which suits a role shared by people or workloads that should be accounted
-separately. The templates use the identity syntax of Vault policies;
-[Attribution](#attribution) describes how they resolve and when a read is
-refused.
-
-```sh
-vault write litellm/roles/people key_request=@people.json \
-  user_id_template='{{identity.entity.aliases.auth_oidc_5b7c1e2a.name}}' \
-  team_id_template='{{identity.groups.names.project-x.metadata.litellm_team_id}}'
-```
-
-**Mixed.** A fixed value in `key_request` wins over the template for that
-field, so a role can pin the team and still stamp each caller as the user.
-
-```sh
-vault write litellm/roles/team-blue \
-  key_request='{"models":["qwen-a3b"],"team_id":"9c1d2e3f-team-blue"}' \
-  user_id_template='{{identity.entity.aliases.auth_kubernetes_130e0f36.name}}'
-```
-
-Neither field requires a matching record in LiteLLM at the time the key is
-generated. The plugin never creates users or teams; create the team first so
-its settings apply, and see [Attribution](#attribution) for how a user
-record created later picks up earlier usage.
+`user_id` and `team_id` are set on the role, either as fixed values in
+`key_request` or from the caller's identity through `user_id_template` and
+`team_id_template`. Nothing is set per request. [Attribution](#attribution)
+shows the options and the precedence between them.
 
 ### Generate a key
 
@@ -370,9 +328,56 @@ describes the key API, alias rules and the Enterprise-only endpoints.
 LiteLLM records a key's `user_id` and `team_id` on every request row and in
 its daily aggregates, and keeps them after the key is deleted. Its
 [cost tracking documentation](https://docs.litellm.ai/docs/proxy/cost_tracking)
-covers those endpoints. A role can set both from the Vault caller's identity
-with [identity templates](https://developer.hashicorp.com/vault/docs/concepts/policies#templated-policies),
-the syntax Vault policies use.
+covers those endpoints, and its
+[team documentation](https://docs.litellm.ai/docs/proxy/team_budgets) covers
+what a team's models and budget do to a key that carries its `team_id`.
+
+### Where the values come from
+
+Both fields are set on the role and only there. A read of `creds/<role>`
+takes no parameters, so the caller cannot supply or override either value.
+The role is the policy boundary: whoever can write it decides how its keys
+are attributed, and a caller who could choose their own `user_id` would
+defeat that.
+
+A role sets each field in one of two ways, and the two can be combined.
+
+**Fixed.** A value in `key_request` is sent as given on every read. This
+suits a service whose keys should all be accounted together.
+
+```json
+{
+  "models": ["qwen-a3b"],
+  "user_id": "billing-service",
+  "team_id": "9c1d2e3f-team-blue"
+}
+```
+
+**From the caller.** `user_id_template` and `team_id_template` resolve
+against the identity of the Vault token that reads the role, using the
+[identity template syntax](https://developer.hashicorp.com/vault/docs/concepts/policies#templated-policies)
+of Vault policies. This suits a role shared by people or workloads that
+should be accounted separately.
+
+```sh
+vault write litellm/roles/people key_request=@people.json \
+  user_id_template='{{identity.entity.aliases.auth_oidc_5b7c1e2a.name}}' \
+  team_id_template='{{identity.groups.names.project-x.metadata.litellm_team_id}}'
+```
+
+**Mixed.** A fixed value wins over the template for the same field, so a
+role can pin the team and still stamp each caller as the user.
+
+```sh
+vault write litellm/roles/team-blue \
+  key_request='{"models":["qwen-a3b"],"team_id":"9c1d2e3f-team-blue"}' \
+  user_id_template='{{identity.entity.aliases.auth_kubernetes_130e0f36.name}}'
+```
+
+A role with neither sends no `user_id` or `team_id`, and LiteLLM records
+the key without an owner.
+
+### How templates resolve
 
 `{{identity.entity.aliases.<accessor>.name}}` resolves to the caller's alias
 name on that auth mount, the subject or email the IdP supplied, which is
@@ -387,15 +392,18 @@ group or metadata the template names, or if the template resolves to an
 empty string. The errors read `user_id_template is set but the caller's
 token has no entity`, `user_id_template "…" did not resolve for this caller:
 …` and `user_id_template "…" resolved to an empty value for this caller`,
-with `team_id_template` in the same forms. A non-empty `user_id` or
-`team_id` in `key_request` is used as-is and skips the template. Templates
-are validated when the role is written.
+with `team_id_template` in the same forms. Templates are validated when the
+role is written.
 
-The plugin never creates LiteLLM users or teams. A stamped `user_id` needs
-no user record for LiteLLM's analytics endpoints, and a record created later
-with `POST /user/new` attaches everything logged under that id. The LiteLLM
-UI lists only users with a record. Whatever a template resolves to is
-visible to LiteLLM administrators on every key and log row.
+### Records in LiteLLM
+
+The plugin never creates LiteLLM users or teams, and LiteLLM accepts either
+id on a key without a record behind it. Create the team first so its
+settings apply. A stamped `user_id` needs no user record for LiteLLM's
+analytics endpoints, and a record created later with `POST /user/new`
+attaches everything logged under that id. The LiteLLM UI lists only users
+with a record. Whatever a template resolves to is visible to LiteLLM
+administrators on every key and log row.
 
 ## Key custody
 
