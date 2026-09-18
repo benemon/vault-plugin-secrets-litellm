@@ -227,6 +227,76 @@ community instance a successor key is generated under the same LiteLLM user
 and the previous key is deleted, with a warning that says so.
 [Key custody](#key-custody) covers the guarantees and refusals.
 
+### Consume keys from Kubernetes
+
+[Vault Secrets Operator](https://developer.hashicorp.com/vault/docs/platform/k8s/vso)
+syncs both kinds of role into Kubernetes Secrets. The custom resource has to
+match the kind of role, because the operator restarts workloads on different
+triggers for each.
+
+Dynamic roles use a
+[VaultDynamicSecret](https://developer.hashicorp.com/vault/docs/platform/k8s/vso/api-reference#vaultdynamicsecret).
+The operator renews the lease at `renewalPercent` of its TTL, reads a new key
+when a renewal is capped by `max_ttl`, revokes the lease when the resource is
+deleted, and restarts the listed workloads whenever it syncs a new key.
+
+```yaml
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultDynamicSecret
+metadata:
+  name: app-litellm
+spec:
+  vaultAuthRef: vault-auth
+  mount: litellm
+  path: creds/app
+  renewalPercent: 67
+  revoke: true
+  destination:
+    create: true
+    name: litellm-key
+  rolloutRestartTargets:
+    - kind: Deployment
+      name: app
+```
+
+Static roles use a
+[VaultStaticSecret](https://developer.hashicorp.com/vault/docs/platform/k8s/vso/api-reference#vaultstaticsecret)
+with `type: kv-v1`. The `type` field accepts only `kv-v1` and `kv-v2`, and
+`kv-v1` is a plain read of `<mount>/<path>` whose data becomes the Secret,
+which is what `static-creds/<role>` returns. The operator re-reads the path
+every `refreshAfter`, compares the data with what it last wrote, and restarts
+the listed workloads only when the key has changed, which happens when
+`rotate-role/<role>` is written.
+
+```yaml
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: svc-litellm
+spec:
+  vaultAuthRef: vault-auth
+  mount: litellm
+  type: kv-v1
+  path: static-creds/svc
+  refreshAfter: 60s
+  destination:
+    create: true
+    name: litellm-static-key
+  rolloutRestartTargets:
+    - kind: Deployment
+      name: svc
+```
+
+Do not point a `VaultDynamicSecret` at `static-creds/<role>`. It syncs,
+because the path answers a read, but the operator treats every refresh of a
+response without a lease as a new secret and restarts the workloads each
+time. After `rotate-role` the previous key is refused until the next refresh,
+so `refreshAfter` bounds the outage.
+
+The Vault policy for the operator's auth role needs `read` on the
+`creds/<role>` or `static-creds/<role>` path, and for dynamic roles `update`
+on `sys/leases/renew` and `sys/leases/revoke`.
+
 ## Lease behaviour
 
 Each read of `creds/<role>` sends the role's `key_request` to
