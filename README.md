@@ -106,14 +106,21 @@ gh attestation verify vault-plugin-secrets-litellm_<version>_linux_amd64.zip \
 ```sh
 vault write litellm/config \
   url=https://litellm.example.com \
-  admin_key=sk-...
+  admin_key=sk-... \
+  ca_cert=@/etc/ssl/certs/litellm-ca.pem
 ```
+
+`ca_cert` is the PEM bundle that verifies LiteLLM's certificate and is
+omitted when the system trust store suffices. The `@file` form is the Vault
+CLI reading the file into the value, as with `key_request` below; the API
+takes the PEM text directly.
 
 The write calls LiteLLM's `GET /key/list` with the supplied key and is
 refused if LiteLLM rejects it. Writing again with a subset of parameters
 keeps the others. `vault read litellm/config` returns `url`, `ca_cert` and
 `insecure_tls`. `vault delete litellm/config` removes the configuration,
-after which role and key operations fail until it is written again.
+after which key operations fail until it is written again. Roles can still
+be written and read.
 
 ### Define a role
 
