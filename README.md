@@ -141,15 +141,52 @@ there. Fields that need a LiteLLM Enterprise licence, such as `tags` and
 `guardrails`, are refused by a community instance with its licence error,
 which is returned to the caller.
 
-To attribute each key to the caller, set identity templates on the role.
+### Set the key's user and team
+
+`user_id` and `team_id` are ordinary `POST /key/generate` fields. LiteLLM
+records them on every request the key makes and applies the
+[team's](https://docs.litellm.ai/docs/proxy/team_budgets) models and budget
+to the key. A role can fix them, take them from the Vault caller's identity,
+or mix the two.
+
+**Fixed.** Put the values in `key_request`. Every key from the role belongs
+to that user and team, which suits a service whose keys should all be
+accounted together.
+
+```json
+{
+  "models": ["qwen-a3b"],
+  "user_id": "billing-service",
+  "team_id": "9c1d2e3f-team-blue"
+}
+```
+
+**From the caller.** Set `user_id_template` or `team_id_template` on the
+role instead. Each key carries the identity of the Vault token that read it,
+which suits a role shared by people or workloads that should be accounted
+separately. The templates use the identity syntax of Vault policies;
 [Attribution](#attribution) describes how they resolve and when a read is
 refused.
 
 ```sh
-vault write litellm/roles/app key_request=@app.json \
+vault write litellm/roles/people key_request=@people.json \
   user_id_template='{{identity.entity.aliases.auth_oidc_5b7c1e2a.name}}' \
   team_id_template='{{identity.groups.names.project-x.metadata.litellm_team_id}}'
 ```
+
+**Mixed.** A fixed value in `key_request` wins over the template for that
+field, so a role can pin the team and still stamp each caller as the user.
+
+```sh
+vault write litellm/roles/team-blue \
+  key_request='{"models":["qwen-a3b"],"team_id":"9c1d2e3f-team-blue"}' \
+  user_id_template='{{identity.entity.aliases.auth_kubernetes_130e0f36.name}}'
+```
+
+Neither field requires a matching record in LiteLLM at the time the key is
+generated. The plugin never creates users or teams; create the team first so
+its settings apply, and see [Attribution](#attribution) for how a user
+record created later picks up earlier usage.
 
 ### Generate a key
 
