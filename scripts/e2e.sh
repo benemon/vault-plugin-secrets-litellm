@@ -16,8 +16,19 @@ ADMIN_USER="vault-e2e-admin"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
-key_status() { curl -sS -o /dev/null -w '%{http_code}' -H "$MH" "$LITELLM_URL/key/info?key=$1"; }
-key_expires() { curl -sS -H "$MH" "$LITELLM_URL/key/info?key=$1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["info"]["expires"])'; }
+# /key/info takes its key in the query string, and LiteLLM's access log records
+# query strings, so keys are looked up by their hash, which it also accepts.
+key_hash() { printf %s "$1" | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'; }
+key_status() { curl -sS -o /dev/null -w '%{http_code}' -H "$MH" "$LITELLM_URL/key/info?key=$(key_hash "$1")"; }
+key_info() { curl -sS -H "$MH" "$LITELLM_URL/key/info?key=$(key_hash "$1")"; }
+# json a.b.c reads one field of the JSON on stdin; lists and objects come back
+# as compact JSON, a missing field as an empty string.
+json() { python3 -c 'import json,sys
+v=json.load(sys.stdin)
+for k in sys.argv[1].split("."):
+    v=v.get(k) if isinstance(v,dict) else None
+print("" if v is None else json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)' "$1"; }
+key_expires() { key_info "$1" | json info.expires; }
 auth_status() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$LITELLM_URL/v1/models"; }
 to_epoch() { python3 -c 'import sys,datetime;print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")).timestamp()))' "$1"; }
 
@@ -55,7 +66,8 @@ pass "configured with a proxy_admin virtual key"
 
 # Regenerate is the Enterprise-gated call.
 PROBE=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/generate" -d '{"key_alias":"vault-e2e-edition-probe","duration":"2m"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token_id"])')
-if curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/$PROBE/regenerate" -d '{}' | grep -q '"key"'; then EDITION=enterprise; else EDITION=community; fi
+REGEN=$(curl -sS -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/$PROBE/regenerate" -d '{}')
+if [ -n "$(json key <<<"$REGEN")" ]; then EDITION=enterprise; else EDITION=community; fi
 curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d '{"key_aliases":["vault-e2e-edition-probe"]}'
 pass "LiteLLM edition detected: $EDITION"
 
@@ -69,6 +81,16 @@ else
 fi
 pass "rotate-root replaced the admin key by the $EDITION path"
 
+# The master key is not a virtual key: /key/info answers 404 for it, on every
+# release, and rotate-root refuses rather than minting a successor.
+"$V" secrets enable -path=litellm-master litellm >/dev/null
+"$V" write litellm-master/config url="$LITELLM_URL" admin_key="$LITELLM_MASTER_KEY" >/dev/null
+"$V" write -f litellm-master/rotate-root >"$SCRATCH/rotate-master.txt" 2>&1 && fail "rotate-root accepted the master key"
+grep -q 'not a virtual key' "$SCRATCH/rotate-master.txt" || fail "rotate-root refused the master key for another reason: $(cat "$SCRATCH/rotate-master.txt")"
+[ "$(auth_status "$LITELLM_MASTER_KEY")" = 200 ] || fail "master key stopped authenticating after a refused rotate-root"
+"$V" secrets disable litellm-master >/dev/null
+pass "rotate-root refused the master key"
+
 "$V" write litellm/roles/e2e ttl=10m max_ttl=15m \
   key_request='{"models":["qwen-a3b"],"max_budget":0.05,"rpm_limit":10,"metadata":{"suite":"e2e"}}' >/dev/null
 "$V" read -format=json litellm/creds/e2e >"$SCRATCH/creds.json"
@@ -76,12 +98,25 @@ read -r KEY LEASE < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]))
 [ "$(key_status "$KEY")" = 200 ] || fail "generated key unknown to LiteLLM"
 pass "generated key from role (lease $LEASE)"
 
-# The auth layer answers this without inference, so it proves the key works
-# even when the lab's model backends are asleep.
-OUT=$(curl -sS --max-time 30 -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+# The plugin's half of scoping: the key LiteLLM holds carries the role's
+# key_request, field for field.
+INFO=$(key_info "$KEY")
+[ "$(json info.models <<<"$INFO")" = '["qwen-a3b"]' ] || fail "key models: want [\"qwen-a3b\"], got $(json info.models <<<"$INFO")"
+[ "$(json info.max_budget <<<"$INFO")" = 0.05 ] || fail "key max_budget: want 0.05, got $(json info.max_budget <<<"$INFO")"
+[ "$(json info.rpm_limit <<<"$INFO")" = 10 ] || fail "key rpm_limit: want 10, got $(json info.rpm_limit <<<"$INFO")"
+[ "$(json info.metadata.suite <<<"$INFO")" = e2e ] || fail "key metadata.suite: want e2e, got $(json info.metadata.suite <<<"$INFO")"
+# LiteLLM's half. The auth layer answers both requests without inference, so
+# they hold while the lab's model backends are asleep. The first shows the key
+# is valid, so the refusal can only be about the model. The refusal is judged
+# by its status and error type, which LiteLLM keeps stable; its message is not
+# (https://github.com/BerriAI/litellm/pull/41310), and no longer tells a
+# refused model from a misspelled one.
+[ "$(auth_status "$KEY")" = 200 ] || fail "issued key does not authenticate: /v1/models answered $(auth_status "$KEY")"
+CODE=$(curl -sS --max-time 30 -o "$SCRATCH/refusal.json" -w '%{http_code}' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -X POST "$LITELLM_URL/v1/chat/completions" -d '{"model":"granite","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}')
-grep -q 'key not allowed to access model' <<<"$OUT" || fail "model outside role was not rejected: $OUT"
-pass "key authenticates and is scoped to the role's models"
+TYPE=$(json error.type <"$SCRATCH/refusal.json")
+[ "$CODE" = 403 ] && [ "$TYPE" = key_model_access_denied ] || fail "model outside the role: want 403 key_model_access_denied, got $CODE ${TYPE:-no error type}"
+pass "key carries the role's request and is refused models outside it"
 if curl -sS --max-time 60 -o "$SCRATCH/chat.json" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -X POST "$LITELLM_URL/v1/chat/completions" -d '{"model":"qwen-a3b","max_tokens":4,"messages":[{"role":"user","content":"Say OK"}]}' \
   && grep -q '"choices"' "$SCRATCH/chat.json"; then
@@ -104,15 +139,37 @@ pass "renew beyond max_ttl capped at the lease's hard end"
 
 "$V" lease revoke "$LEASE" >/dev/null
 sleep 1
-[ "$(key_status "$KEY")" = 404 ] || fail "key still present after lease revoke"
+# A deleted key answers 404 from /key/info, or, from LiteLLM v1.103.0, a record
+# whose info.status is "deleted"
+# (https://github.com/BerriAI/litellm/pull/41311). Either way it must also stop
+# authenticating: a record that says deleted proves nothing about whether the
+# credential still works.
+key_gone() {
+  local code
+  code=$(curl -sS -o "$SCRATCH/info.json" -w '%{http_code}' -H "$MH" "$LITELLM_URL/key/info?key=$(key_hash "$1")")
+  [ "$code" = 404 ] && return 0
+  [ "$code" = 200 ] && [ "$(json info.status <"$SCRATCH/info.json")" = deleted ]
+}
+key_gone "$KEY" || fail "key still present after lease revoke: /key/info answered $(key_status "$KEY")"
+[ "$(auth_status "$KEY")" = 401 ] || fail "revoked key still authenticates: /v1/models answered $(auth_status "$KEY")"
 pass "revoke deleted the key"
 
 "$V" write litellm/roles/short ttl=20s key_request='{"models":["qwen-a3b"]}' >/dev/null
 K2=$("$V" read -field=key litellm/creds/short)
 [ "$(key_status "$K2")" = 200 ] || fail "short-lived key unknown to LiteLLM"
 sleep 35
-[ "$(key_status "$K2")" = 404 ] || fail "key survived its lease expiring"
+key_gone "$K2" || fail "key survived its lease expiring"
+[ "$(auth_status "$K2")" = 401 ] || fail "expired key still authenticates"
 pass "expired lease deleted the key"
+
+# Revoking a lease whose key was already deleted outside Vault is a no-op: the
+# engine reads LiteLLM's 404 from /key/delete as "already gone".
+read -r K3 L3 < <("$V" read -format=json litellm/creds/e2e | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["data"]["key"],d["lease_id"])')
+curl -sS -o /dev/null -H "$MH" -H 'Content-Type: application/json' -X POST "$LITELLM_URL/key/delete" -d "{\"keys\":[\"$(key_hash "$K3")\"]}"
+key_gone "$K3" || fail "setup: the key deleted outside Vault is still there"
+"$V" lease revoke -sync "$L3" >"$SCRATCH/revoke-gone.txt" 2>&1 || fail "revoking a lease whose key was already deleted failed: $(cat "$SCRATCH/revoke-gone.txt")"
+"$V" lease lookup "$L3" >/dev/null 2>&1 && fail "lease survived its revoke"
+pass "revoke of a key already deleted outside Vault succeeded"
 
 # The root token has no entity.
 "$V" auth enable userpass >/dev/null
